@@ -2,12 +2,13 @@ package plan
 
 import (
 	"fmt"
-	"regexp"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/ilibx/gsql/pkg/catalog"
+	"github.com/ilibx/gsql/pkg/sqlparse"
 	"github.com/ilibx/gsql/pkg/storage"
 )
 
@@ -55,10 +56,10 @@ func (n *TableScanNode) Explain(indent int) string {
 
 type FilterNode struct {
 	Child     PlanNode
-	Predicate string
+	Predicate sqlparse.Expression
 }
 
-func NewFilterNode(child PlanNode, predicate string) *FilterNode {
+func NewFilterNode(child PlanNode, predicate sqlparse.Expression) *FilterNode {
 	return &FilterNode{Child: child, Predicate: predicate}
 }
 
@@ -71,12 +72,12 @@ func (n *FilterNode) Execute() ([]storage.Row, error) {
 	if err != nil {
 		return nil, err
 	}
-	return filterRowsParallel(rows, n.Predicate)
+	return filterRowsParallel(rows, n.Predicate), nil
 }
 
 func (n *FilterNode) Explain(indent int) string {
 	prefix := strings.Repeat("  ", indent)
-	return fmt.Sprintf("%sFilter(%s)\n%s", prefix, n.Predicate, n.Child.Explain(indent+1))
+	return fmt.Sprintf("%sFilter(%s)\n%s", prefix, expressionToString(n.Predicate), n.Child.Explain(indent+1))
 }
 
 type ProjectNode struct {
@@ -176,13 +177,9 @@ func cloneRows(rows []storage.Row) []storage.Row {
 	return cloned
 }
 
-func filterRowsParallel(rows []storage.Row, where string) ([]storage.Row, error) {
-	if len(rows) == 0 || strings.TrimSpace(where) == "" {
-		return rows, nil
-	}
-	predicate := parseSimplePredicate(where)
-	if predicate == nil {
-		return filterRows(rows, where), nil
+func filterRowsParallel(rows []storage.Row, expr sqlparse.Expression) []storage.Row {
+	if len(rows) == 0 || expr == nil {
+		return rows
 	}
 
 	workers := runtime.GOMAXPROCS(0)
@@ -205,7 +202,7 @@ func filterRowsParallel(rows []storage.Row, where string) ([]storage.Row, error)
 		go func(idx int, slice []storage.Row) {
 			filtered := make([]storage.Row, 0, len(slice))
 			for _, row := range slice {
-				if predicate(row) {
+				if evaluateExpression(row, expr) {
 					filtered = append(filtered, row)
 				}
 			}
@@ -224,7 +221,7 @@ func filterRowsParallel(rows []storage.Row, where string) ([]storage.Row, error)
 			result = append(result, segment...)
 		}
 	}
-	return result, nil
+	return result
 }
 
 func projectRowsParallel(rows []storage.Row, columns []string) []storage.Row {
@@ -275,33 +272,6 @@ func projectRowsParallel(rows []storage.Row, columns []string) []storage.Row {
 	return result
 }
 
-func parseSimplePredicate(where string) func(storage.Row) bool {
-	re := regexp.MustCompile(`(?i)^(\w+)\s*=\s*'([^']*)'$`)
-	matches := re.FindStringSubmatch(strings.TrimSpace(where))
-	if len(matches) != 3 {
-		return nil
-	}
-	key := matches[1]
-	value := matches[2]
-	return func(row storage.Row) bool {
-		return row[key] == value
-	}
-}
-
-func filterRows(rows []storage.Row, where string) []storage.Row {
-	predicate := parseSimplePredicate(where)
-	if predicate == nil {
-		return rows
-	}
-	filtered := make([]storage.Row, 0, len(rows))
-	for _, row := range rows {
-		if predicate(row) {
-			filtered = append(filtered, row)
-		}
-	}
-	return filtered
-}
-
 func sortRows(rows []storage.Row, orderBy []string) {
 	if len(orderBy) == 0 {
 		return
@@ -310,4 +280,81 @@ func sortRows(rows []storage.Row, orderBy []string) {
 	sort.SliceStable(rows, func(i, j int) bool {
 		return rows[i][key] < rows[j][key]
 	})
+}
+
+func evaluateExpression(row storage.Row, expr sqlparse.Expression) bool {
+	switch v := expr.(type) {
+	case *sqlparse.ComparisonExpr:
+		left := row[v.Column]
+		right := v.Value
+		switch v.Operator {
+		case "=":
+			return left == right
+		case "!=":
+			return left != right
+		case "LIKE":
+			return matchLike(left, right)
+		case "<", ">", "<=", ">=":
+			return compareValues(left, right, v.Operator)
+		default:
+			return false
+		}
+	default:
+		return false
+	}
+}
+
+func matchLike(value, pattern string) bool {
+	if pattern == "%" {
+		return true
+	}
+	if strings.HasPrefix(pattern, "%") && strings.HasSuffix(pattern, "%") {
+		return strings.Contains(value, strings.Trim(pattern, "%"))
+	}
+	if strings.HasPrefix(pattern, "%") {
+		return strings.HasSuffix(value, strings.TrimPrefix(pattern, "%"))
+	}
+	if strings.HasSuffix(pattern, "%") {
+		return strings.HasPrefix(value, strings.TrimSuffix(pattern, "%"))
+	}
+	return value == pattern
+}
+
+func compareValues(left, right, op string) bool {
+	leftNum, lErr := strconv.ParseFloat(left, 64)
+	rightNum, rErr := strconv.ParseFloat(right, 64)
+	if lErr == nil && rErr == nil {
+		switch op {
+		case "<":
+			return leftNum < rightNum
+		case ">":
+			return leftNum > rightNum
+		case "<=":
+			return leftNum <= rightNum
+		case ">=":
+			return leftNum >= rightNum
+		}
+		return false
+	}
+	switch op {
+	case "<":
+		return left < right
+	case ">":
+		return left > right
+	case "<=":
+		return left <= right
+	case ">=":
+		return left >= right
+	default:
+		return false
+	}
+}
+
+func expressionToString(expr sqlparse.Expression) string {
+	switch v := expr.(type) {
+	case *sqlparse.ComparisonExpr:
+		return fmt.Sprintf("%s %s '%s'", v.Column, v.Operator, v.Value)
+	default:
+		return "unknown"
+	}
 }

@@ -33,7 +33,7 @@ gsql 拥有以下核心层次：
 - `CREATE TABLE ... WITH (...)`
 - `SELECT ... FROM ...`
 - `WITH` 公共表表达式（CTE）
-- `WHERE` 简单等值过滤
+- `WHERE` 基本比较过滤：`=`, `!=`, `<`, `>`, `<=`, `>=`, `LIKE`
 - `ORDER BY`
 - `LIMIT`
 - `INSERT OVERWRITE TABLE ... SELECT ...`
@@ -88,7 +88,7 @@ WITH (
 INSERT OVERWRITE TABLE result_users
 SELECT id, name
 FROM users
-WHERE email LIKE '%@example.com';
+WHERE name != 'alice';
 ```
 
 ## 并行执行与计划生成
@@ -96,7 +96,7 @@ WHERE email LIKE '%@example.com';
 当前引擎已将 `SELECT` 查询转换为执行计划节点：
 
 - `TableScan`：读取本地表文件
-- `Filter`：并行过滤行
+- `Filter`：并行过滤行，支持单个比较谓词
 - `Sort`：排序结果
 - `Limit`：截取结果行数
 - `Project`：并行投影所需列

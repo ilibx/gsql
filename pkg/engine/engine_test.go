@@ -56,7 +56,10 @@ func TestEngineSelectFromLocalCSV(t *testing.T) {
 		t.Fatalf("create table failed: %v", err)
 	}
 
-	rows, err := engine.executeSelect("SELECT id, name FROM users")
+	rows, err := engine.executeSelect(&sqlparse.SelectQuery{
+		Columns: []string{"id", "name"},
+		Table:   "users",
+	})
 	if err != nil {
 		t.Fatalf("execute select failed: %v", err)
 	}
@@ -101,12 +104,64 @@ func TestEngineSelectWithCTE(t *testing.T) {
 )
 SELECT id, name FROM recent_users`
 
-	rows, err := engine.executeSelect(query)
+	stmts, err := sqlparse.NewParser().Parse(query)
+	if err != nil {
+		t.Fatalf("parse query failed: %v", err)
+	}
+	selectStmt, ok := stmts[0].(*sqlparse.SelectStmt)
+	if !ok {
+		t.Fatalf("expected SelectStmt, got %T", stmts[0])
+	}
+	rows, err := engine.executeSelect(selectStmt.Query)
 	if err != nil {
 		t.Fatalf("execute select with CTE failed: %v", err)
 	}
 	if len(rows) != 1 {
 		t.Fatalf("expected 1 row, got %d", len(rows))
+	}
+	if rows[0]["name"] != "alice" {
+		t.Errorf("expected alice, got %s", rows[0]["name"])
+	}
+}
+
+func TestEngineSelectWithLikePredicate(t *testing.T) {
+	dir := t.TempDir()
+	csvData := "1,alice,alice@example.com\n2,bob,bob@example.com\n"
+	filePath := filepath.Join(dir, "users.csv")
+	if err := os.WriteFile(filePath, []byte(csvData), 0o644); err != nil {
+		t.Fatalf("write csv failed: %v", err)
+	}
+
+	cat := catalog.NewCatalog()
+	engine := NewEngine(cat)
+	table := &catalog.Table{
+		Name: "users",
+		Columns: []catalog.ColumnDef{
+			{Name: "id", Type: "INT"},
+			{Name: "name", Type: "STRING"},
+			{Name: "email", Type: "STRING"},
+		},
+		WithOptions: map[string]string{
+			"storage":      "local",
+			"format":       "csv",
+			"location":     dir,
+			"file_pattern": "*.csv",
+		},
+	}
+	if err := cat.CreateTable(table); err != nil {
+		t.Fatalf("create table failed: %v", err)
+	}
+
+	rows, err := engine.executeSelect(&sqlparse.SelectQuery{
+		Columns: []string{"id", "name"},
+		Table:   "users",
+		Where:   &sqlparse.ComparisonExpr{Column: "email", Operator: "LIKE", Value: "%@example.com"},
+	})
+	if err != nil {
+		t.Fatalf("execute select failed: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("expected 2 rows, got %d", len(rows))
 	}
 	if rows[0]["name"] != "alice" {
 		t.Errorf("expected alice, got %s", rows[0]["name"])
@@ -161,7 +216,10 @@ func TestEngineInsertOverwriteTable(t *testing.T) {
 
 	stmt := &sqlparse.InsertOverwriteStmt{
 		TableName: "result_users",
-		Query:     "SELECT id, name FROM users",
+		Query: &sqlparse.SelectQuery{
+			Columns: []string{"id", "name"},
+			Table:   "users",
+		},
 	}
 	if err := engine.Execute(stmt); err != nil {
 		t.Fatalf("execute insert overwrite failed: %v", err)
