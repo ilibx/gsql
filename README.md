@@ -54,6 +54,11 @@ gsql 拥有以下核心层次：
 - `INSERT OVERWRITE TABLE ... SELECT ...`
 - `PARTITIONED BY (col1, col2, ...)` 分区表定义，写入时自动按分区列值写入子目录
 - 本地 `CSV` / `JSON` 数据读取与写入
+- **云存储与远程数据源支持**：
+  - `S3` / S3兼容服务（MinIO、阿里OSS等）
+  - `FTP` / `SFTP` 文件服务器
+  - `WebDAV` 协议支持
+  - `Git LFS` 版本控制大文件访问
 - 表别名支持（`FROM users u`、`JOIN orders o`）
 - 列别名支持（`COUNT(*) AS cnt`、`ORDER BY cnt`）
 
@@ -128,6 +133,91 @@ FROM users
 WHERE name != 'alice';
 ```
 
+### S3 / S3兼容服务 (使用 AWS S3)
+
+```sql
+CREATE TABLE s3_data (
+  id INT,
+  name STRING
+)
+WITH (
+  storage = 's3',
+  s3_bucket = 'my-bucket',
+  s3_region = 'us-east-1',
+  s3_prefix = 'data/',
+  format = 'csv',
+  file_pattern = '*.csv'
+);
+
+SELECT * FROM s3_data LIMIT 10;
+```
+
+### FTP / SFTP 服务器
+
+```sql
+CREATE TABLE ftp_data (
+  id INT,
+  name STRING
+)
+WITH (
+  storage = 'ftp',
+  ftp_host = 'ftp.example.com',
+  ftp_port = '21',
+  ftp_user = 'username',
+  ftp_pass = 'password',
+  ftp_path = '/data',
+  format = 'csv',
+  file_pattern = '*.csv'
+);
+
+-- SFTP 类似，使用 storage = 'sftp' 和相应的 sftp_* 参数
+```
+
+### WebDAV 存储
+
+```sql
+CREATE TABLE webdav_data (
+  id INT,
+  name STRING
+)
+WITH (
+  storage = 'webdav',
+  webdav_url = 'http://webdav.example.com',
+  webdav_user = 'username',
+  webdav_pass = 'password',
+  webdav_path = '/public/data',
+  format = 'csv',
+  file_pattern = '*.csv'
+);
+```
+
+### Git LFS 版本控制
+
+```sql
+CREATE TABLE gitlfs_data (
+  id INT,
+  name STRING
+)
+WITH (
+  storage = 'git-lfs',
+  git_lfs_repo = '/path/to/git/repo',
+  format = 'csv',
+  file_pattern = '*.csv'
+);
+
+-- 或指定 LFS 缓存路径
+CREATE TABLE gitlfs_cache (
+  id INT,
+  name STRING
+)
+WITH (
+  storage = 'gitlfs',
+  git_lfs_path = '/lfs/objects',
+  format = 'csv',
+  file_pattern = '*.csv'
+);
+```
+
 ## 并行执行与计划生成
 
 当前引擎已将 `SELECT` 查询转换为执行计划节点：
@@ -148,9 +238,36 @@ WHERE name != 'alice';
 go test ./...
 ```
 
+## Makefile 使用
+
+```bash
+make build
+make run-sql SQL=samples/query_check.sql
+make check-sql
+make test
+```
+
+- `make build`：构建可执行文件 `bin/gsql`
+- `make run-sql`：执行指定 SQL 文件
+- `make check-sql`：执行 `samples/query_check.sql` 并校验输出是否与 `samples/query_check.expected` 一致
+- `make test`：运行全部 Go 测试
+
+## 存储适配器详情
+
+gsql 支持多种存储后端：
+
+| 存储类型 | 说明 | 配置参数 |
+|---------|------|---------|
+| `local` | 本地文件系统 | `location`, `file_pattern`, `file_name` |
+| `s3` | AWS S3 或 S3兼容服务 | `s3_bucket`, `s3_region`, `s3_prefix`, `s3_endpoint`(可选) |
+| `ftp` | FTP 服务器 | `ftp_host`, `ftp_port`, `ftp_user`, `ftp_pass`, `ftp_path` |
+| `sftp` | SFTP 服务器 | `sftp_host`, `sftp_port`, `sftp_user`, `sftp_pass`, `sftp_path` |
+| `webdav` | WebDAV 服务 | `webdav_url`, `webdav_user`, `webdav_pass`, `webdav_path` |
+| `git-lfs` / `gitlfs` | Git LFS 版本控制 | `git_lfs_repo` 或 `git_lfs_path` |
+
 ## 未来扩展方向
 
-- 支持更多数据源（S3 / FTP / SFTP / WebDAV / Git LFS）
-- 添加更多 SQL 标准特性
-- 引入更完善的 SQL 解析器与优化器
+- 支持更多 SQL 标准特性（UNION、INTERSECT、EXCEPT等）
+- 添加更完善的 SQL 解析器与优化器
 - 进一步扩展执行计划算子与分区裁剪逻辑
+- 支持分布式执行或更大规模并行模型

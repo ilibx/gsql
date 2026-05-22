@@ -36,6 +36,16 @@ func ReadTableRows(tbl *catalog.Table, filters ...PartitionFilter) ([]Row, error
 	switch storageType {
 	case "", "local":
 		return readLocalTable(tbl, filters)
+	case "s3":
+		return readS3Table(tbl, filters)
+	case "ftp":
+		return readFTPTable(tbl, filters)
+	case "sftp":
+		return readSFTPTable(tbl, filters)
+	case "webdav":
+		return readWebDAVTable(tbl, filters)
+	case "git-lfs", "gitlfs":
+		return readGitLFSTable(tbl, filters)
 	default:
 		return nil, fmt.Errorf("unsupported storage type %q", storageType)
 	}
@@ -242,6 +252,16 @@ func WriteRows(tbl *catalog.Table, rows []Row, appendMode bool) error {
 	switch storageType {
 	case "", "local":
 		return writeLocalTable(tbl, rows, appendMode)
+	case "s3":
+		return writeS3Table(tbl, rows, appendMode)
+	case "ftp":
+		return writeFTPTable(tbl, rows, appendMode)
+	case "sftp":
+		return writeSFTPTable(tbl, rows, appendMode)
+	case "webdav":
+		return writeWebDAVTable(tbl, rows, appendMode)
+	case "git-lfs", "gitlfs":
+		return writeGitLFSTable(tbl, rows, appendMode)
 	default:
 		return fmt.Errorf("unsupported storage type %q", storageType)
 	}

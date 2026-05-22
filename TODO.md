@@ -38,16 +38,19 @@
 - [x] 优化器规则：`MergeFilters`（合并相邻 Filter）
 - [x] 列裁剪：`ColumnPruning`（在 Scan 上自动插入 Project 裁剪无用列）
 - [x] 支持基于成本的简单计划选择（`EstimateRows` + `CostBasedJoinReorder` 规则，利用 `Table.EstimatedRows` 统计信息自动将小表放在哈希连接的构建侧）
-- [ ] 数据源扩展
-  - [ ] 增加 `S3` 访问适配器
-  - [ ] 增加 `FTP` / `SFTP` / `WebDAV` 数据源适配
-  - [ ] 增加 `Git LFS` 数据访问支持
+- [x] 数据源扩展
+  - [x] 增加 `S3` 访问适配器（支持 AWS S3 和 S3兼容服务）
+  - [x] 增加 `FTP` / `SFTP` / `WebDAV` 数据源适配
+  - [x] 增加 `Git LFS` 数据访问支持
 - [x] 存储与写入增强
   - [x] 支持目标表分区目录写入
-  - [ ] 支持追加写入与覆盖策略
+  - [x] 支持追加写入与覆盖策略（`INSERT OVERWRITE` 和 `INSERT INTO`）
 - [x] 引擎功能补齐
   - [x] 支持窗口函数与 `OVER` 计算（ROW_NUMBER、RANK、DENSE_RANK 及聚合窗口函数）
   - [x] 支持 `CREATE EXTERNAL TABLE` 语义
+  - [x] `UNION` 和 `UNION ALL` 支持
+  - [x] `CASE WHEN` 表达式支持
+- [x] 测试阶段：使用 samples 数据执行 gsql 命令，并校验输出结果
 
 ## 长期目标
 - [ ] 进一步靠近 Hive 风格执行架构
