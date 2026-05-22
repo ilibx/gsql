@@ -1,0 +1,10 @@
+{"id":"1","name":"Laptop","category":"Electronics","price":"6999","stock":"50"}
+{"id":"2","name":"Phone","category":"Electronics","price":"4999","stock":"120"}
+{"id":"3","name":"Desk","category":"Furniture","price":"1599","stock":"30"}
+{"id":"4","name":"Chair","category":"Furniture","price":"899","stock":"45"}
+{"id":"5","name":"Headphones","category":"Electronics","price":"299","stock":"200"}
+{"id":"6","name":"Mouse","category":"Electronics","price":"99","stock":"500"}
+{"id":"7","name":"Keyboard","category":"Electronics","price":"199","stock":"300"}
+{"id":"8","name":"Lamp","category":"Furniture","price":"149","stock":"80"}
+{"id":"9","name":"Backpack","category":"Accessories","price":"399","stock":"150"}
+{"id":"10","name":"Watch","category":"Accessories","price":"1299","stock":"60"}

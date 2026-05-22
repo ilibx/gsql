@@ -7,9 +7,12 @@ import (
 
 // Table defines a logical table and its data source options.
 type Table struct {
-    Name        string
-    Columns     []ColumnDef
-    WithOptions map[string]string
+	Name          string
+	Columns       []ColumnDef
+	WithOptions   map[string]string
+	External      bool
+	PartitionBy   []string
+	EstimatedRows int64 // 0 means unknown
 }
 
 type ColumnDef struct {
@@ -35,8 +38,16 @@ func (c *Catalog) CreateTable(tbl *Table) error {
 }
 
 func (c *Catalog) GetTable(name string) (*Table, bool) {
-    tbl, ok := c.tables[normalizeName(name)]
-    return tbl, ok
+	tbl, ok := c.tables[normalizeName(name)]
+	return tbl, ok
+}
+
+func (c *Catalog) TableNames() []string {
+	names := make([]string, 0, len(c.tables))
+	for n := range c.tables {
+		names = append(names, n)
+	}
+	return names
 }
 
 func (t *Table) Option(key string, defaultValue string) string {

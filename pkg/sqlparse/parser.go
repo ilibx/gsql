@@ -57,6 +57,31 @@ const (
 	ORDER
 	BY
 	LIMIT
+	AND
+	OR
+	GROUP
+	HAVING
+	DOT
+	JOIN
+	ON
+	IS
+	NULL_KEYWORD
+	NOT
+	IN_KEYWORD
+	DISTINCT
+	PLUS
+	MINUS
+	DIV
+	EXTERNAL
+	OVER
+	PARTITION
+	INTO
+	UNION
+	CASE_KW
+	WHEN_KW
+	THEN_KW
+	ELSE_KW
+	END_KW
 )
 
 var keywords = map[string]TokenType{
@@ -73,6 +98,27 @@ var keywords = map[string]TokenType{
 	"by":        BY,
 	"limit":     LIMIT,
 	"like":      LIKE,
+	"and":       AND,
+	"or":        OR,
+	"group":     GROUP,
+	"having":    HAVING,
+	"join":      JOIN,
+	"on":        ON,
+	"is":        IS,
+	"null":      NULL_KEYWORD,
+	"not":       NOT,
+	"in":        IN_KEYWORD,
+	"distinct":  DISTINCT,
+	"external":  EXTERNAL,
+	"over":      OVER,
+	"partition": PARTITION,
+	"into":      INTO,
+	"union":     UNION,
+	"case":      CASE_KW,
+	"when":      WHEN_KW,
+	"then":      THEN_KW,
+	"else":      ELSE_KW,
+	"end":       END_KW,
 }
 
 func NewParser() *Parser {
@@ -158,9 +204,23 @@ func tokenName(t TokenType) string {
 		return ">="
 	case LIKE:
 		return "LIKE"
+	case AND:
+		return "AND"
+	case OR:
+		return "OR"
+	case DOT:
+		return "."
+	case JOIN:
+		return "JOIN"
+	case ON:
+		return "ON"
+	case GROUP:
+		return "GROUP"
+	case HAVING:
+		return "HAVING"
 	case SEMICOLON:
 		return ";"
-	case CREATE, TABLE, WITH, AS, INSERT, OVERWRITE, SELECT, FROM, WHERE, ORDER, BY, LIMIT:
+	case CREATE, TABLE, WITH, AS, INSERT, OVERWRITE, SELECT, FROM, WHERE, ORDER, BY, LIMIT, IS, NULL_KEYWORD, NOT, IN_KEYWORD, DISTINCT, EXTERNAL, OVER, PARTITION:
 		return strings.ToUpper(t.String())
 	default:
 		return "UNKNOWN"
@@ -171,6 +231,12 @@ func (t TokenType) String() string {
 	switch t {
 	case CREATE:
 		return "CREATE"
+	case EXTERNAL:
+		return "EXTERNAL"
+	case OVER:
+		return "OVER"
+	case PARTITION:
+		return "PARTITION"
 	case TABLE:
 		return "TABLE"
 	case WITH:
@@ -195,6 +261,40 @@ func (t TokenType) String() string {
 		return "LIMIT"
 	case LIKE:
 		return "LIKE"
+	case DOT:
+		return "."
+	case JOIN:
+		return "JOIN"
+	case ON:
+		return "ON"
+	case AND:
+		return "AND"
+	case OR:
+		return "OR"
+	case GROUP:
+		return "GROUP"
+	case IS:
+		return "IS"
+	case NULL_KEYWORD:
+		return "NULL"
+	case NOT:
+		return "NOT"
+	case IN_KEYWORD:
+		return "IN"
+	case DISTINCT:
+		return "DISTINCT"
+	case UNION:
+		return "UNION"
+	case CASE_KW:
+		return "CASE"
+	case WHEN_KW:
+		return "WHEN"
+	case THEN_KW:
+		return "THEN"
+	case ELSE_KW:
+		return "ELSE"
+	case END_KW:
+		return "END"
 	default:
 		return ""
 	}
@@ -259,6 +359,14 @@ func (l *lexer) nextToken() Token {
 		} else {
 			tok = Token{Type: GT, Literal: ">"}
 		}
+	case '+':
+		tok = Token{Type: PLUS, Literal: "+"}
+	case '-':
+		tok = Token{Type: MINUS, Literal: "-"}
+	case '/':
+		tok = Token{Type: DIV, Literal: "/"}
+	case '.':
+		tok = Token{Type: DOT, Literal: "."}
 	case ';':
 		tok = Token{Type: SEMICOLON, Literal: ";"}
 	case '\'', '"':
@@ -346,6 +454,11 @@ func (p *Parser) parseStatement() (Statement, error) {
 }
 
 func (p *Parser) parseCreateTable() (*CreateTableStmt, error) {
+	external := false
+	if p.peekIs(EXTERNAL) {
+		external = true
+		p.nextToken()
+	}
 	if err := p.expectPeek(TABLE); err != nil {
 		return nil, err
 	}
@@ -379,11 +492,40 @@ func (p *Parser) parseCreateTable() (*CreateTableStmt, error) {
 		return nil, err
 	}
 	p.nextToken()
+
+	partitionBy := p.parsePartitionedBy()
+
 	return &CreateTableStmt{
 		Name:        tableName,
 		Columns:     columns,
 		WithOptions: options,
+		External:    external,
+		PartitionBy: partitionBy,
 	}, nil
+}
+
+func (p *Parser) parsePartitionedBy() []string {
+	if p.cur.Type != IDENT || strings.ToLower(p.cur.Literal) != "partitioned" {
+		return nil
+	}
+	p.nextToken()
+	if p.cur.Type != BY {
+		return nil
+	}
+	p.nextToken()
+	if p.cur.Type != LPAREN {
+		return nil
+	}
+	p.nextToken()
+	cols, err := p.parseDottedList()
+	if err != nil {
+		return nil
+	}
+	if p.cur.Type != RPAREN {
+		return nil
+	}
+	p.nextToken()
+	return cols
 }
 
 func (p *Parser) parseColumnDefinitions() ([]ColumnDef, error) {
@@ -434,14 +576,20 @@ func (p *Parser) parseWithOptions() (map[string]string, error) {
 }
 
 func (p *Parser) parseInsertOverwrite() (*InsertOverwriteStmt, error) {
-	if err := p.expectPeek(OVERWRITE); err != nil {
-		return nil, err
+	appendMode := false
+	if p.peekIs(INTO) {
+		appendMode = true
+		p.nextToken()
+	} else if p.peekIs(OVERWRITE) {
+		p.nextToken()
+	} else {
+		return nil, fmt.Errorf("expected INTO or OVERWRITE after INSERT")
 	}
 	if err := p.expectPeek(TABLE); err != nil {
 		return nil, err
 	}
 	if err := p.expectPeek(IDENT); err != nil {
-		return nil, fmt.Errorf("expected target table name after INSERT OVERWRITE TABLE")
+		return nil, fmt.Errorf("expected target table name after INSERT %s TABLE", map[bool]string{true: "INTO", false: "OVERWRITE"}[appendMode])
 	}
 	tableName := p.cur.Literal
 	p.nextToken()
@@ -449,7 +597,7 @@ func (p *Parser) parseInsertOverwrite() (*InsertOverwriteStmt, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &InsertOverwriteStmt{TableName: tableName, Query: query}, nil
+	return &InsertOverwriteStmt{TableName: tableName, Query: query, Append: appendMode}, nil
 }
 
 func (p *Parser) parseSelectQuery() (*SelectQuery, error) {
@@ -465,21 +613,98 @@ func (p *Parser) parseSelectQuery() (*SelectQuery, error) {
 		return nil, fmt.Errorf("expected SELECT, got %s", tokenName(p.cur.Type))
 	}
 	p.nextToken()
-	columns, err := p.parseColumnList()
+	distinct := false
+	if p.cur.Type == DISTINCT {
+		distinct = true
+		p.nextToken()
+	}
+	columns, columnExprs, aggregates, windowExprs, colAliases, err := p.parseSelectItems()
 	if err != nil {
 		return nil, err
 	}
 	if err := p.expectPeek(FROM); err != nil {
 		return nil, err
 	}
-	if err := p.expectPeek(IDENT); err != nil {
-		return nil, fmt.Errorf("expected table name after FROM")
+
+	var tableName string
+	var tableAlias string
+	var fromSubquery *SelectQuery
+	var fromAlias string
+	if p.peekIs(LPAREN) {
+		p.nextToken()
+		p.nextToken()
+		fromSubquery, err = p.parseSelectQuery()
+		if err != nil {
+			return nil, err
+		}
+		if p.cur.Type != RPAREN {
+			return nil, fmt.Errorf("expected ) after subquery in FROM clause")
+		}
+		p.nextToken()
+		if p.curIs(AS) {
+			p.nextToken()
+		}
+		if p.cur.Type == IDENT {
+			fromAlias = p.cur.Literal
+			tableAlias = fromAlias
+			p.nextToken()
+		} else {
+			return nil, fmt.Errorf("expected alias for subquery in FROM clause")
+		}
+	} else {
+		if err := p.expectPeek(IDENT); err != nil {
+			return nil, fmt.Errorf("expected table name after FROM")
+		}
+		tableName = p.cur.Literal
+		p.nextToken()
+		if p.curIs(AS) {
+			p.nextToken()
+		}
+		if p.cur.Type == IDENT {
+			tableAlias = p.cur.Literal
+			p.nextToken()
+		}
 	}
-	tableName := p.cur.Literal
-	p.nextToken()
+
+	var joins []JoinClause
+	for p.curIs(JOIN) {
+		p.nextToken()
+		if p.cur.Type != IDENT {
+			return nil, fmt.Errorf("expected table name after JOIN")
+		}
+		rightTable := p.cur.Literal
+		var rightAlias string
+		p.nextToken()
+		if p.curIs(AS) {
+			p.nextToken()
+		}
+		if p.cur.Type == IDENT {
+			rightAlias = p.cur.Literal
+			p.nextToken()
+		}
+		if p.cur.Type != ON {
+			return nil, fmt.Errorf("expected ON after JOIN table %s", rightTable)
+		}
+		p.nextToken()
+		leftCol, err := p.parseDottedIdentifier()
+		if err != nil {
+			return nil, fmt.Errorf("JOIN ON left side: %w", err)
+		}
+		if p.cur.Type != EQUAL {
+			return nil, fmt.Errorf("expected = in JOIN ON clause")
+		}
+		p.nextToken()
+		rightCol, err := p.parseDottedIdentifier()
+		if err != nil {
+			return nil, fmt.Errorf("JOIN ON right side: %w", err)
+		}
+		joins = append(joins, JoinClause{RightTable: rightTable, RightAlias: rightAlias, LeftColumn: leftCol, RightColumn: rightCol})
+	}
 
 	var where Expression
-	var orderBy []string
+	var groupBy []string
+	var having Expression
+	var orderBy []SortOrder
 	var limit int
 	if p.cur.Type == WHERE {
 		p.nextToken()
@@ -487,18 +712,39 @@ func (p *Parser) parseSelectQuery() (*SelectQuery, error) {
 		if err != nil {
 			return nil, err
 		}
+	}
+	if p.cur.Type == GROUP {
+		if err := p.expectPeek(BY); err != nil {
+			return nil, err
+		}
 		p.nextToken()
+		groupBy, err = p.parseDottedList()
+		if err != nil {
+			return nil, err
+		}
+		if p.cur.Type == HAVING {
+			p.nextToken()
+			having, err = p.parseExpression()
+			if err != nil {
+				return nil, err
+			}
+		}
+	} else if p.cur.Type == HAVING {
+		p.nextToken()
+		having, err = p.parseExpression()
+		if err != nil {
+			return nil, err
+		}
 	}
 	if p.cur.Type == ORDER {
 		if err := p.expectPeek(BY); err != nil {
 			return nil, err
 		}
 		p.nextToken()
-		orderBy, err = p.parseIdentifierList()
+		orderBy, err = p.parseOrderByList()
 		if err != nil {
 			return nil, err
 		}
-		p.nextToken()
 	}
 	if p.cur.Type == LIMIT {
 		p.nextToken()
@@ -511,18 +757,52 @@ func (p *Parser) parseSelectQuery() (*SelectQuery, error) {
 		}
 		p.nextToken()
 	}
+	query := &SelectQuery{
+		CTEs:          ctes,
+		Columns:       columns,
+		ColumnExprs:   columnExprs,
+		Aggregates:    aggregates,
+		WindowExprs:   windowExprs,
+		Distinct:      distinct,
+		Table:         tableName,
+		TableAlias:    tableAlias,
+		FromSubquery:  fromSubquery,
+		FromAlias:     fromAlias,
+		Joins:         joins,
+		Where:         where,
+		GroupBy:       groupBy,
+		Having:        having,
+		OrderBy:       orderBy,
+		Limit:         limit,
+		ColumnAliases: colAliases,
+	}
+	if len(aggregates) > 0 && len(groupBy) == 0 && len(columns) == 0 {
+		query.Columns = columns
+	}
+
+	// UNION [ALL]
+	if p.cur.Type == UNION {
+		unionAll := false
+		p.nextToken()
+		if p.cur.Type == IDENT && strings.ToLower(p.cur.Literal) == "all" {
+			unionAll = true
+			p.nextToken()
+		}
+		unionQuery, err := p.parseSelectQuery()
+		if err != nil {
+			return nil, err
+		}
+		query.UnionQuery = unionQuery
+		query.UnionAll = unionAll
+	}
+
+	// Remaining token check: only enforce for end-of-statement markers
+	// (UNION is already handled above)
 	if p.cur.Type != SEMICOLON && p.cur.Type != EOF && p.cur.Type != RPAREN {
 		return nil, fmt.Errorf("unexpected token %s after SELECT query", tokenName(p.cur.Type))
 	}
 
-	return &SelectQuery{
-		CTEs:    ctes,
-		Columns: columns,
-		Table:   tableName,
-		Where:   where,
-		OrderBy: orderBy,
-		Limit:   limit,
-	}, nil
+	return query, nil
 }
 
 func (p *Parser) parseCTEList() ([]CTE, error) {
@@ -600,21 +880,162 @@ func (p *Parser) parseIdentifierList() ([]string, error) {
 }
 
 func (p *Parser) parseExpression() (Expression, error) {
+	left, err := p.parseComparison()
+	if err != nil {
+		return nil, err
+	}
+	for p.curIs(AND) || p.curIs(OR) {
+		op := strings.ToUpper(p.cur.Literal)
+		p.nextToken()
+		right, err := p.parseComparison()
+		if err != nil {
+			return nil, err
+		}
+		left = &LogicalExpr{Left: left, Operator: op, Right: right}
+	}
+	return left, nil
+}
+
+func (p *Parser) parseComparison() (Expression, error) {
+	if p.cur.Type == IDENT && p.peekIs(LPAREN) {
+		funcName := strings.ToUpper(p.cur.Literal)
+		p.nextToken()
+		p.nextToken()
+		var col string
+		var parseErr error
+		if p.cur.Type == ASTERISK {
+			col = "*"
+			p.nextToken()
+		} else if p.cur.Type == IDENT {
+			col, parseErr = p.parseDottedIdentifier()
+			if parseErr != nil {
+				return nil, fmt.Errorf("inside %s(): %w", funcName, parseErr)
+			}
+		} else {
+			return nil, fmt.Errorf("expected column or * inside %s()", funcName)
+		}
+		if p.cur.Type != RPAREN {
+			return nil, fmt.Errorf("expected ) after argument in %s()", funcName)
+		}
+		p.nextToken()
+		left := funcName + "(" + col + ")"
+		// After aggregate: check for IS NULL, IS NOT NULL, IN, NOT IN, or comparison
+		return p.parsePostAggregateOp(left)
+	}
+
 	if p.cur.Type != IDENT {
-		return nil, fmt.Errorf("expected expression column name, got %s", tokenName(p.cur.Type))
+		return nil, fmt.Errorf("expected column name in expression, got %s", tokenName(p.cur.Type))
 	}
-	left := p.cur.Literal
-	if !isComparisonOperator(p.peek.Type) {
-		return nil, fmt.Errorf("expected comparison operator after %s, got %s", left, tokenName(p.peek.Type))
+	col, err := p.parseDottedIdentifier()
+	if err != nil {
+		return nil, err
 	}
-	p.nextToken()
+	// Check for IS NULL, IS NOT NULL
+	if p.cur.Type == IS {
+		p.nextToken()
+		if p.cur.Type == NOT {
+			p.nextToken()
+			if p.cur.Type != NULL_KEYWORD {
+				return nil, fmt.Errorf("expected NULL after IS NOT")
+			}
+			p.nextToken()
+			return &NullTestExpr{Column: col, IsNull: false}, nil
+		}
+		if p.cur.Type != NULL_KEYWORD {
+			return nil, fmt.Errorf("expected NULL after IS")
+		}
+		p.nextToken()
+		return &NullTestExpr{Column: col, IsNull: true}, nil
+	}
+	// Check for NOT IN / IN
+	not := false
+	if p.cur.Type == NOT && p.peekIs(IN_KEYWORD) {
+		not = true
+		p.nextToken()
+		p.nextToken()
+	} else if p.cur.Type == IN_KEYWORD {
+		p.nextToken()
+	} else {
+		// Regular comparison operator
+		if !isComparisonOperator(p.cur.Type) {
+			return nil, fmt.Errorf("expected comparison operator after %s, got %s", col, tokenName(p.cur.Type))
+		}
+		operator := p.cur.Literal
+		p.nextToken()
+		if p.cur.Type != STRING && p.cur.Type != NUMBER {
+			return nil, fmt.Errorf("expected literal on right side of expression, got %s", tokenName(p.cur.Type))
+		}
+		val := p.cur.Literal
+		p.nextToken()
+		return &ComparisonExpr{Column: col, Operator: operator, Value: val}, nil
+	}
+	return p.parseInExpr(col, not)
+}
+
+func (p *Parser) parsePostAggregateOp(left string) (Expression, error) {
+	if p.cur.Type == IS {
+		p.nextToken()
+		if p.cur.Type == NOT {
+			p.nextToken()
+			if p.cur.Type != NULL_KEYWORD {
+				return nil, fmt.Errorf("expected NULL after IS NOT")
+			}
+			p.nextToken()
+			return &NullTestExpr{Column: left, IsNull: false}, nil
+		}
+		if p.cur.Type != NULL_KEYWORD {
+			return nil, fmt.Errorf("expected NULL after IS")
+		}
+		p.nextToken()
+		return &NullTestExpr{Column: left, IsNull: true}, nil
+	}
+	if p.cur.Type == NOT && p.peekIs(IN_KEYWORD) {
+		p.nextToken()
+		p.nextToken()
+		return p.parseInExpr(left, true)
+	}
+	if p.cur.Type == IN_KEYWORD {
+		p.nextToken()
+		return p.parseInExpr(left, false)
+	}
+	if !isComparisonOperator(p.cur.Type) {
+		return nil, fmt.Errorf("expected comparison operator after %s, got %s", left, tokenName(p.cur.Type))
+	}
 	operator := p.cur.Literal
 	p.nextToken()
 	if p.cur.Type != STRING && p.cur.Type != NUMBER {
 		return nil, fmt.Errorf("expected literal on right side of expression, got %s", tokenName(p.cur.Type))
 	}
-	return &ComparisonExpr{Column: left, Operator: operator, Value: p.cur.Literal}, nil
+	val := p.cur.Literal
+	p.nextToken()
+	return &ComparisonExpr{Column: left, Operator: operator, Value: val}, nil
 }
+
+func (p *Parser) parseInExpr(col string, not bool) (Expression, error) {
+	if p.cur.Type != LPAREN {
+		return nil, fmt.Errorf("expected ( after IN")
+	}
+	p.nextToken()
+	var values []string
+	for {
+		if p.cur.Type != STRING && p.cur.Type != NUMBER {
+			return nil, fmt.Errorf("expected value in IN list, got %s", tokenName(p.cur.Type))
+		}
+		values = append(values, p.cur.Literal)
+		if p.peekIs(COMMA) {
+			p.nextToken()
+			p.nextToken()
+			continue
+		}
+		break
+	}
+	if p.cur.Type != RPAREN {
+		return nil, fmt.Errorf("expected ) after IN list")
+	}
+	p.nextToken()
+	return &InExpr{Column: col, Not: not, Values: values}, nil
+}
+
 
 func isComparisonOperator(t TokenType) bool {
 	switch t {
@@ -623,6 +1044,355 @@ func isComparisonOperator(t TokenType) bool {
 	default:
 		return false
 	}
+}
+
+func (p *Parser) parseSelectItems() ([]string, []Expression, []AggregateExpr, []WindowExpr, map[string]string, error) {
+	colAliases := make(map[string]string)
+	if p.cur.Type == ASTERISK {
+		return []string{"*"}, nil, nil, nil, colAliases, nil
+	}
+	var columns []string
+	var columnExprs []Expression
+	var aggregates []AggregateExpr
+	var windowExprs []WindowExpr
+	for {
+		if p.cur.Type == CASE_KW {
+			caseExpr, err := p.parseCaseExpr()
+			if err != nil {
+				return nil, nil, nil, nil, nil, err
+			}
+			colKey := fmt.Sprintf("CASE_%d", len(columns))
+			columns = append(columns, colKey)
+			columnExprs = append(columnExprs, caseExpr)
+			aggregates = append(aggregates, AggregateExpr{})
+			windowExprs = append(windowExprs, WindowExpr{})
+			if p.curIs(AS) || (p.cur.Type == IDENT && len(columns) > 0) {
+				if p.curIs(AS) {
+					p.nextToken()
+				}
+				if p.cur.Type == IDENT {
+					colAliases[p.cur.Literal] = colKey
+				}
+			}
+			if p.cur.Type == COMMA {
+				p.nextToken()
+				continue
+			}
+			break
+		}
+		if p.cur.Type != IDENT {
+			return nil, nil, nil, nil, nil, fmt.Errorf("expected column name or aggregate function, got %s", tokenName(p.cur.Type))
+		}
+		ident := p.cur.Literal
+		if p.peekIs(LPAREN) {
+			funcName := strings.ToUpper(ident)
+			p.nextToken()
+			p.nextToken()
+			var args []string
+			if p.cur.Type == ASTERISK {
+				args = []string{"*"}
+				p.nextToken()
+			} else if p.cur.Type == IDENT {
+				col, parseErr := p.parseDottedIdentifier()
+				if parseErr != nil {
+					return nil, nil, nil, nil, nil, fmt.Errorf("inside %s(): %w", funcName, parseErr)
+				}
+				args = []string{col}
+			} else if p.cur.Type == RPAREN {
+				// zero-arg function like ROW_NUMBER()
+			} else {
+				return nil, nil, nil, nil, nil, fmt.Errorf("expected column name or * inside %s()", funcName)
+			}
+			if p.cur.Type != RPAREN {
+				return nil, nil, nil, nil, nil, fmt.Errorf("expected ) after argument in %s()", funcName)
+			}
+			argStr := ""
+			if len(args) > 0 {
+				argStr = args[0]
+			}
+			colKey := funcName + "(" + argStr + ")"
+
+			if p.peekIs(OVER) {
+				// Window function: OVER (PARTITION BY ... ORDER BY ...)
+				p.nextToken() // consume )
+				p.nextToken() // consume OVER
+				windowExpr, err := p.parseWindowSpec(funcName, args)
+				if err != nil {
+					return nil, nil, nil, nil, nil, err
+				}
+				windowExprs = append(windowExprs, *windowExpr)
+				columns = append(columns, colKey)
+				columnExprs = append(columnExprs, nil)
+				if p.curIs(AS) {
+					p.nextToken()
+					if p.curIs(IDENT) {
+						colAliases[p.cur.Literal] = colKey
+					}
+				}
+			} else {
+				aggregates = append(aggregates, AggregateExpr{FuncName: funcName, Column: argStr})
+				columns = append(columns, colKey)
+				columnExprs = append(columnExprs, nil)
+				if p.peekIs(AS) {
+					p.nextToken()
+					if p.peekIs(IDENT) {
+						p.nextToken()
+						colAliases[p.cur.Literal] = colKey
+					}
+				}
+			}
+		} else {
+			colName := p.cur.Literal
+			hasExpr := false
+			if p.peekIs(DOT) {
+				p.nextToken()
+				p.nextToken()
+				if p.cur.Type != IDENT {
+					return nil, nil, nil, nil, nil, fmt.Errorf("expected column name after .")
+				}
+				colName = colName + "." + p.cur.Literal
+			}
+			if isArithmeticOp(p.peek) {
+				p.nextToken()
+				expr, err := p.parseArithmeticExpr(&ColumnRef{Name: colName})
+				if err != nil {
+					return nil, nil, nil, nil, nil, err
+				}
+				colName = exprToString(expr)
+				columns = append(columns, colName)
+				columnExprs = append(columnExprs, expr)
+				hasExpr = true
+			}
+			if !hasExpr {
+				columns = append(columns, colName)
+				columnExprs = append(columnExprs, nil)
+			}
+			if p.peekIs(AS) {
+				p.nextToken()
+				if p.peekIs(IDENT) {
+					p.nextToken()
+					colAliases[p.cur.Literal] = colName
+				}
+			}
+		}
+		if p.peekIs(COMMA) {
+			p.nextToken()
+			p.nextToken()
+			continue
+		}
+		break
+	}
+	return columns, columnExprs, aggregates, windowExprs, colAliases, nil
+}
+
+func (p *Parser) parseWindowSpec(funcName string, args []string) (*WindowExpr, error) {
+	if p.cur.Type != LPAREN {
+		return nil, fmt.Errorf("expected ( after OVER")
+	}
+	p.nextToken()
+
+	var partitionBy []string
+	var orderBy []SortOrder
+
+	if p.cur.Type == PARTITION {
+		if err := p.expectPeek(BY); err != nil {
+			return nil, err
+		}
+		p.nextToken()
+		var err error
+		partitionBy, err = p.parseDottedList()
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	if p.cur.Type == ORDER {
+		if err := p.expectPeek(BY); err != nil {
+			return nil, err
+		}
+		p.nextToken()
+		var err error
+		orderBy, err = p.parseOrderByList()
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	if p.cur.Type != RPAREN {
+		return nil, fmt.Errorf("expected ) after window specification, got %s", tokenName(p.cur.Type))
+	}
+	p.nextToken()
+
+	return &WindowExpr{
+		FuncName:    funcName,
+		Args:        args,
+		PartitionBy: partitionBy,
+		OrderBy:     orderBy,
+	}, nil
+}
+
+func isArithmeticOp(tok Token) bool {
+	return tok.Type == PLUS || tok.Type == MINUS || tok.Type == ASTERISK || tok.Type == DIV
+}
+
+func (p *Parser) parseArithmeticExpr(left Expression) (Expression, error) {
+	if left == nil {
+		var err error
+		left, err = p.parseArithmeticPrimary()
+		if err != nil {
+			return nil, err
+		}
+	}
+	for isArithmeticOp(p.cur) {
+		op := p.cur.Literal
+		p.nextToken()
+		right, err := p.parseArithmeticPrimary()
+		if err != nil {
+			return nil, err
+		}
+		left = &BinaryExpr{Left: left, Operator: op, Right: right}
+	}
+	return left, nil
+}
+
+func (p *Parser) parseArithmeticPrimary() (Expression, error) {
+	if p.cur.Type == NUMBER || p.cur.Type == STRING {
+		val := p.cur.Literal
+		p.nextToken()
+		return &ComparisonExpr{Column: "", Operator: "=", Value: val}, nil
+	}
+	if p.cur.Type == CASE_KW {
+		return p.parseCaseExpr()
+	}
+	if p.cur.Type == IDENT {
+		col, err := p.parseDottedIdentifier()
+		if err != nil {
+			return nil, err
+		}
+		return &ColumnRef{Name: col}, nil
+	}
+	if p.cur.Type == LPAREN {
+		p.nextToken()
+		expr, err := p.parseArithmeticExpr(nil)
+		if err != nil {
+			return nil, err
+		}
+		if p.cur.Type != RPAREN {
+			return nil, fmt.Errorf("expected ) after subexpression")
+		}
+		p.nextToken()
+		return expr, nil
+	}
+	return nil, fmt.Errorf("expected arithmetic operand, got %s", tokenName(p.cur.Type))
+}
+
+func (p *Parser) parseCaseExpr() (*CaseExpr, error) {
+	p.nextToken() // skip CASE
+	expr := &CaseExpr{}
+
+	for p.cur.Type == WHEN_KW {
+		p.nextToken()
+		cond, err := p.parseExpression()
+		if err != nil {
+			return nil, fmt.Errorf("CASE WHEN condition: %w", err)
+		}
+		if p.cur.Type != THEN_KW {
+			return nil, fmt.Errorf("expected THEN after CASE WHEN condition, got %s", tokenName(p.cur.Type))
+		}
+		p.nextToken()
+		res, err := p.parseArithmeticExpr(nil)
+		if err != nil {
+			return nil, fmt.Errorf("CASE THEN result: %w", err)
+		}
+		expr.Branches = append(expr.Branches, CaseBranch{Condition: cond, Result: res})
+	}
+
+	if p.cur.Type == ELSE_KW {
+		p.nextToken()
+		elseExpr, err := p.parseArithmeticExpr(nil)
+		if err != nil {
+			return nil, fmt.Errorf("CASE ELSE: %w", err)
+		}
+		expr.Else = elseExpr
+	}
+
+	if p.cur.Type != END_KW {
+		return nil, fmt.Errorf("expected END at end of CASE expression, got %s", tokenName(p.cur.Type))
+	}
+	p.nextToken()
+	return expr, nil
+}
+
+func exprToString(expr Expression) string {
+	switch v := expr.(type) {
+	case *ColumnRef:
+		return v.Name
+	case *BinaryExpr:
+		return "(" + exprToString(v.Left) + " " + v.Operator + " " + exprToString(v.Right) + ")"
+	case *ComparisonExpr:
+		return v.Value
+	default:
+		return ""
+	}
+}
+
+func (p *Parser) parseDottedList() ([]string, error) {
+	var items []string
+	for {
+		item, err := p.parseDottedIdentifier()
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+		if p.cur.Type == COMMA {
+			p.nextToken()
+			continue
+		}
+		break
+	}
+	return items, nil
+}
+
+func (p *Parser) parseOrderByList() ([]SortOrder, error) {
+	var items []SortOrder
+	for {
+		col, err := p.parseDottedIdentifier()
+		if err != nil {
+			return nil, err
+		}
+		desc := false
+		if strings.EqualFold(p.cur.Literal, "ASC") {
+			p.nextToken()
+		} else if strings.EqualFold(p.cur.Literal, "DESC") {
+			desc = true
+			p.nextToken()
+		}
+		items = append(items, SortOrder{Column: col, Desc: desc})
+		if p.peekIs(COMMA) {
+			p.nextToken()
+			p.nextToken()
+			continue
+		}
+		break
+	}
+	return items, nil
+}
+
+func (p *Parser) parseDottedIdentifier() (string, error) {
+	if p.cur.Type != IDENT {
+		return "", fmt.Errorf("expected identifier, got %s", tokenName(p.cur.Type))
+	}
+	result := p.cur.Literal
+	p.nextToken()
+	for p.curIs(DOT) {
+		p.nextToken()
+		if p.cur.Type != IDENT {
+			return "", fmt.Errorf("expected identifier after .")
+		}
+		result += "." + p.cur.Literal
+		p.nextToken()
+	}
+	return result, nil
 }
 
 func removeComments(sql string) string {

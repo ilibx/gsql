@@ -46,6 +46,8 @@ func (e *Engine) executeCreateTable(stmt *sqlparse.CreateTableStmt) error {
 		Name:        stmt.Name,
 		Columns:     columns,
 		WithOptions: stmt.WithOptions,
+		External:    stmt.External,
+		PartitionBy: stmt.PartitionBy,
 	}
 	if err := e.catalog.CreateTable(table); err != nil {
 		return err
@@ -65,10 +67,15 @@ func (e *Engine) executeInsertOverwrite(stmt *sqlparse.InsertOverwriteStmt) erro
 		return err
 	}
 
-	if err := storage.WriteRows(target, rows); err != nil {
+	if err := storage.WriteRows(target, rows, stmt.Append); err != nil {
+
 		return fmt.Errorf("write target table %s failed: %w", stmt.TableName, err)
 	}
-	fmt.Printf("wrote %d rows to table %s\n", len(rows), stmt.TableName)
+	action := "overwrote"
+	if stmt.Append {
+		action = "appended"
+	}
+	fmt.Printf("%s %d rows to table %s\n", action, len(rows), stmt.TableName)
 	return nil
 }
 
@@ -85,38 +92,216 @@ func (e *Engine) executeSelectWithCTEs(query *sqlparse.SelectQuery, cteTables ma
 		cteTables[strings.ToLower(cte.Name)] = cloneRows(rows)
 	}
 
-	root, err := e.buildPlan(query, cteTables)
+	if query.FromSubquery != nil {
+		rows, err := e.executeSelectWithCTEs(query.FromSubquery, cteTables)
+		if err != nil {
+			return nil, err
+		}
+		if query.FromAlias != "" {
+			cteTables[strings.ToLower(query.FromAlias)] = cloneRows(rows)
+		}
+	}
+
+	logical, err := e.buildLogicalPlan(query, cteTables)
 	if err != nil {
 		return nil, err
 	}
-	return root.Execute()
+
+	optimized := plan.CatalogOptimizer(e.catalog).OptimizeWithPruning(logical)
+
+	physCtx := &plan.PhysicalPlanContext{
+		Catalog: e.catalog,
+		CTEData: cteTables,
+	}
+	root, err := plan.LogicalToPhysical(optimized, physCtx)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := root.Execute()
+	if err != nil {
+		return nil, err
+	}
+
+	// UNION [ALL]
+	if query.UnionQuery != nil {
+		rightRows, err := e.executeSelectWithCTEs(query.UnionQuery, cteTables)
+		if err != nil {
+			return nil, err
+		}
+		rows = append(rows, rightRows...)
+		if !query.UnionAll {
+			rows = dedupRows(rows)
+		}
+	}
+
+	return rows, nil
 }
 
-func (e *Engine) buildPlan(sel *sqlparse.SelectQuery, cteTables map[string][]storage.Row) (plan.PlanNode, error) {
-	var root plan.PlanNode
-	if rows, ok := cteTables[strings.ToLower(sel.Table)]; ok {
-		root = plan.NewCTETableScanNode(sel.Table, rows)
-	} else {
-		table, ok := e.catalog.GetTable(sel.Table)
-		if !ok {
-			return nil, fmt.Errorf("table %s not found", sel.Table)
-		}
-		root = plan.NewTableScanNode(table)
+func (e *Engine) buildLogicalPlan(sel *sqlparse.SelectQuery, cteTables map[string][]storage.Row) (plan.LogicalNode, error) {
+	var root plan.LogicalNode
+
+	tableName := sel.Table
+	if sel.FromSubquery != nil && sel.FromAlias != "" {
+		tableName = sel.FromAlias
 	}
 
-	if sel.Where != nil {
-		root = plan.NewFilterNode(root, sel.Where)
+	if _, ok := cteTables[strings.ToLower(tableName)]; ok {
+		root = plan.NewLogicalCTEScan(tableName)
+	} else {
+		root = plan.NewLogicalScan(tableName, sel.TableAlias)
 	}
-	if len(sel.OrderBy) > 0 {
-		root = plan.NewSortNode(root, sel.OrderBy)
+
+	for _, join := range sel.Joins {
+		var rightRoot plan.LogicalNode
+		if _, ok := cteTables[strings.ToLower(join.RightTable)]; ok {
+			rightRoot = plan.NewLogicalCTEScan(join.RightTable)
+		} else {
+			rightRoot = plan.NewLogicalScan(join.RightTable, join.RightAlias)
+		}
+		leftCol := stripTableAlias(join.LeftColumn)
+		rightCol := stripTableAlias(join.RightColumn)
+		root = plan.NewLogicalJoin(root, rightRoot, leftCol, rightCol)
 	}
+
+	where := sel.Where
+	if where != nil {
+		where = stripExprAliases(where)
+		root = plan.NewLogicalFilter(root, where)
+	}
+
+	groupBy := make([]string, len(sel.GroupBy))
+	for i, col := range sel.GroupBy {
+		groupBy[i] = stripTableAlias(col)
+	}
+
+	if len(groupBy) > 0 || len(sel.Aggregates) > 0 {
+		aggDefs := make([]plan.AggregateDef, len(sel.Aggregates))
+		for i, agg := range sel.Aggregates {
+			aggDefs[i] = plan.AggregateDef{FuncName: agg.FuncName, Column: stripTableAlias(agg.Column)}
+		}
+		root = plan.NewLogicalAggregate(root, groupBy, aggDefs)
+	}
+
+	having := sel.Having
+	if having != nil {
+		having = stripExprAliases(having)
+		root = plan.NewLogicalFilter(root, having)
+	}
+
+	// Window functions
+	hasWindow := false
+	for _, w := range sel.WindowExprs {
+		if w.FuncName != "" {
+			hasWindow = true
+			break
+		}
+	}
+	if hasWindow {
+		windowExprs := make([]sqlparse.WindowExpr, len(sel.WindowExprs))
+		for i, w := range sel.WindowExprs {
+			if w.FuncName == "" {
+				continue
+			}
+			partBy := make([]string, len(w.PartitionBy))
+			for j, p := range w.PartitionBy {
+				partBy[j] = stripTableAlias(p)
+			}
+			ob := make([]sqlparse.SortOrder, len(w.OrderBy))
+			for j, o := range w.OrderBy {
+				ob[j] = sqlparse.SortOrder{Column: stripTableAlias(o.Column), Desc: o.Desc}
+			}
+			windowExprs[i] = sqlparse.WindowExpr{
+				FuncName:    w.FuncName,
+				Args:        w.Args,
+				PartitionBy: partBy,
+				OrderBy:     ob,
+			}
+		}
+		root = plan.NewLogicalWindow(root, windowExprs)
+	}
+
+	orderBy := make([]sqlparse.SortOrder, len(sel.OrderBy))
+	for i, o := range sel.OrderBy {
+		s := stripTableAlias(o.Column)
+		if alias, ok := sel.ColumnAliases[s]; ok {
+			s = alias
+		}
+		orderBy[i] = sqlparse.SortOrder{Column: s, Desc: o.Desc}
+	}
+	if len(orderBy) > 0 {
+		root = plan.NewLogicalSort(root, orderBy)
+	}
+
 	if sel.Limit > 0 {
-		root = plan.NewLimitNode(root, sel.Limit)
+		root = plan.NewLogicalLimit(root, sel.Limit)
 	}
-	if len(sel.Columns) > 0 {
-		root = plan.NewProjectNode(root, sel.Columns)
+
+	columns := make([]string, len(sel.Columns))
+	columnExprs := make([]sqlparse.Expression, len(sel.Columns))
+	for i, col := range sel.Columns {
+		columns[i] = stripTableAlias(col)
+	}
+	for i, expr := range sel.ColumnExprs {
+		if i < len(columnExprs) {
+			columnExprs[i] = expr
+		}
+	}
+
+	if sel.Distinct && len(columns) > 0 {
+		root = plan.NewLogicalAggregate(root, columns, nil)
+	}
+
+	if len(columns) > 0 {
+		root = plan.NewLogicalProject(root, columns, columnExprs)
 	}
 	return root, nil
+}
+
+func stripTableAlias(col string) string {
+	if idx := strings.IndexByte(col, '.'); idx >= 0 {
+		return col[idx+1:]
+	}
+	return col
+}
+
+func stripExprAliases(expr sqlparse.Expression) sqlparse.Expression {
+	if expr == nil {
+		return nil
+	}
+	switch v := expr.(type) {
+	case *sqlparse.ComparisonExpr:
+		return &sqlparse.ComparisonExpr{
+			Column:   stripTableAlias(v.Column),
+			Operator: v.Operator,
+			Value:    v.Value,
+		}
+	case *sqlparse.LogicalExpr:
+		return &sqlparse.LogicalExpr{
+			Left:     stripExprAliases(v.Left),
+			Operator: v.Operator,
+			Right:    stripExprAliases(v.Right),
+		}
+	}
+	return expr
+}
+
+func dedupRows(rows []storage.Row) []storage.Row {
+	seen := make(map[string]bool)
+	result := make([]storage.Row, 0, len(rows))
+	for _, row := range rows {
+		var parts []string
+		for k, v := range row {
+			parts = append(parts, k+"="+v)
+		}
+		sort.Strings(parts)
+		key := strings.Join(parts, "\x00")
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		result = append(result, row)
+	}
+	return result
 }
 
 func cloneRows(rows []storage.Row) []storage.Row {
