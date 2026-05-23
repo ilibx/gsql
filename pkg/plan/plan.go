@@ -412,24 +412,24 @@ func (n *JoinNode) Execute() ([]storage.Row, error) {
 	}
 
 	// Use the shorter side for building the hash map
+	// Use local variables instead of modifying node fields for concurrency safety
+	leftCol := n.LeftColumn
+	rightCol := n.RightColumn
+
 	if len(leftRows) > len(rightRows) {
 		leftRows, rightRows = rightRows, leftRows
-		leftCol, rightCol := n.LeftColumn, n.RightColumn
-		n.LeftColumn, n.RightColumn = rightCol, leftCol
-		defer func() {
-			n.LeftColumn, n.RightColumn = leftCol, rightCol
-		}()
+		leftCol, rightCol = rightCol, leftCol
 	}
 
 	hash := make(map[string][]storage.Row, len(rightRows))
 	for _, row := range rightRows {
-		key := row[n.RightColumn]
+		key := row[rightCol]
 		hash[key] = append(hash[key], row)
 	}
 
 	var result []storage.Row
 	for _, lr := range leftRows {
-		key := lr[n.LeftColumn]
+		key := lr[leftCol]
 		if matched, ok := hash[key]; ok {
 			for _, rr := range matched {
 				merged := make(storage.Row, len(lr)+len(rr))
@@ -1102,8 +1102,8 @@ func computeWindowAgg(rows []storage.Row, colKey string, args []string, aggFunc 
 			count++
 		case "SUM", "AVG", "MIN", "MAX":
 			total += num
+			count++
 		}
-		count++
 	}
 	countVal := count
 	if aggFunc == "COUNT" {

@@ -10,6 +10,7 @@ import (
 	"io"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/feature/s3/manager"
@@ -25,6 +26,7 @@ const (
 	s3PrefixKey    = "s3_prefix"
 	s3AccessKeyKey = "s3_access_key"
 	s3SecretKeyKey = "s3_secret_key"
+	s3Timeout      = 30 * time.Second
 )
 
 // readS3Table reads data from S3
@@ -34,8 +36,12 @@ func readS3Table(tbl *catalog.Table, filters []PartitionFilter) ([]Row, error) {
 		return nil, fmt.Errorf("missing s3_bucket for table %s", tbl.Name)
 	}
 
+	// Create context with timeout for S3 operations
+	ctx, cancel := context.WithTimeout(context.Background(), s3Timeout)
+	defer cancel()
+
 	// Create S3 client
-	cfg, err := config.LoadDefaultConfig(context.Background())
+	cfg, err := config.LoadDefaultConfig(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load AWS config: %w", err)
 	}
@@ -74,7 +80,7 @@ func readS3Table(tbl *catalog.Table, filters []PartitionFilter) ([]Row, error) {
 	})
 
 	for paginator.HasMorePages() {
-		page, err := paginator.NextPage(context.Background())
+		page, err := paginator.NextPage(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("failed to list S3 objects: %w", err)
 		}
@@ -100,7 +106,7 @@ func readS3Table(tbl *catalog.Table, filters []PartitionFilter) ([]Row, error) {
 	resultCh := make(chan fileResult, len(keys))
 	for _, key := range keys {
 		go func(key string) {
-			obj, err := s3Client.GetObject(context.Background(), &s3.GetObjectInput{
+			obj, err := s3Client.GetObject(ctx, &s3.GetObjectInput{
 				Bucket: &bucket,
 				Key:    &key,
 			})
@@ -149,8 +155,12 @@ func writeS3Table(tbl *catalog.Table, rows []Row, appendMode bool) error {
 		return fmt.Errorf("missing s3_bucket for table %s", tbl.Name)
 	}
 
+	// Create context with timeout for S3 operations
+	ctx, cancel := context.WithTimeout(context.Background(), s3Timeout)
+	defer cancel()
+
 	// Create S3 client
-	cfg, err := config.LoadDefaultConfig(context.Background())
+	cfg, err := config.LoadDefaultConfig(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to load AWS config: %w", err)
 	}
@@ -203,7 +213,7 @@ func writeS3Table(tbl *catalog.Table, rows []Row, appendMode bool) error {
 
 	// Upload to S3
 	uploader := manager.NewUploader(s3Client)
-	_, err = uploader.Upload(context.Background(), &s3.PutObjectInput{
+	_, err = uploader.Upload(ctx, &s3.PutObjectInput{
 		Bucket: &bucket,
 		Key:    &key,
 		Body:   bytes.NewReader(data),

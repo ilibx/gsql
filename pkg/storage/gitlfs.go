@@ -43,17 +43,21 @@ func readGitLFSTable(tbl *catalog.Table, filters []PartitionFilter) ([]Row, erro
 		return nil, fmt.Errorf("missing format for table %s", tbl.Name)
 	}
 
-	// Determine LFS object storage path
-	var lfsCachePath string
+	// Determine source path and LFS object storage path
+	var sourcePath, lfsCachePath string
 	if repoPath != "" {
+		// When using repo, read from repo directory and use its LFS cache
+		sourcePath = repoPath
 		lfsCachePath = filepath.Join(repoPath, ".git", "lfs", "objects")
 	} else {
+		// When using direct LFS path, use it for both
+		sourcePath = lfsPath
 		lfsCachePath = lfsPath
 	}
 
 	// List files that match the pattern
 	var fileNames []string
-	if entries, err := os.ReadDir(lfsPath); err == nil {
+	if entries, err := os.ReadDir(sourcePath); err == nil {
 		for _, entry := range entries {
 			if entry.IsDir() {
 				continue
@@ -65,7 +69,7 @@ func readGitLFSTable(tbl *catalog.Table, filters []PartitionFilter) ([]Row, erro
 	}
 
 	if len(fileNames) == 0 {
-		return nil, fmt.Errorf("no files found in Git LFS at %s", lfsPath)
+		return nil, fmt.Errorf("no files found in Git LFS at %s", sourcePath)
 	}
 
 	// Read files in parallel
@@ -77,7 +81,7 @@ func readGitLFSTable(tbl *catalog.Table, filters []PartitionFilter) ([]Row, erro
 	resultCh := make(chan fileResult, len(fileNames))
 	for _, fileName := range fileNames {
 		go func(fileName string) {
-			filePath := filepath.Join(lfsPath, fileName)
+			filePath := filepath.Join(sourcePath, fileName)
 			data, err := readGitLFSFile(filePath, lfsCachePath)
 			if err != nil {
 				resultCh <- fileResult{err: fmt.Errorf("failed to read Git LFS file %s: %w", fileName, err)}
