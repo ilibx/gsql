@@ -6,6 +6,7 @@ import (
 	"io"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/jlaffaye/ftp"
 	"github.com/pkg/sftp"
@@ -31,6 +32,8 @@ const (
 	webdavUserKey  = "webdav_user"
 	webdavPassKey  = "webdav_pass"
 	webdavPathKey  = "webdav_path"
+	dialTimeout    = 10 * time.Second
+	remoteTimeout  = 30 * time.Second
 )
 
 // readFTPTable reads data from FTP
@@ -51,9 +54,9 @@ func readFTPTable(tbl *catalog.Table, filters []PartitionFilter) ([]Row, error) 
 		return nil, fmt.Errorf("missing format for table %s", tbl.Name)
 	}
 
-	// Connect to FTP
+	// Connect to FTP with timeout
 	addr := fmt.Sprintf("%s:%s", host, port)
-	conn, err := ftp.Dial(addr)
+	conn, err := ftp.DialTimeout(addr, dialTimeout)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to FTP %s: %w", addr, err)
 	}
@@ -102,7 +105,7 @@ func readFTPTable(tbl *catalog.Table, filters []PartitionFilter) ([]Row, error) 
 	resultCh := make(chan fileResult, len(fileNames))
 	for _, fileName := range fileNames {
 		go func(fileName string) {
-			conn2, err := ftp.Dial(addr)
+			conn2, err := ftp.DialTimeout(addr, dialTimeout)
 			if err != nil {
 				resultCh <- fileResult{err: fmt.Errorf("failed to connect to FTP: %w", err)}
 				return
@@ -186,6 +189,7 @@ func readSFTPTable(tbl *catalog.Table, filters []PartitionFilter) ([]Row, error)
 			ssh.Password(pass),
 		},
 		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+		Timeout:         dialTimeout,
 	}
 
 	addr := fmt.Sprintf("%s:%s", host, port)

@@ -897,6 +897,20 @@ func (p *Parser) parseExpression() (Expression, error) {
 }
 
 func (p *Parser) parseComparison() (Expression, error) {
+	// Handle parenthesized expressions
+	if p.cur.Type == LPAREN {
+		p.nextToken()
+		expr, err := p.parseExpression()
+		if err != nil {
+			return nil, err
+		}
+		if p.cur.Type != RPAREN {
+			return nil, fmt.Errorf("expected ) to close parenthesized expression")
+		}
+		p.nextToken()
+		return expr, nil
+	}
+
 	if p.cur.Type == IDENT && p.peekIs(LPAREN) {
 		funcName := strings.ToUpper(p.cur.Literal)
 		p.nextToken()
@@ -930,6 +944,16 @@ func (p *Parser) parseComparison() (Expression, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	// Check for arithmetic expressions (e.g., "age + 5")
+	if isArithmeticOp(p.cur) {
+		expr, err := p.parseArithmeticExpr(&ColumnRef{Name: col})
+		if err != nil {
+			return nil, err
+		}
+		col = exprToString(expr)
+	}
+
 	// Check for IS NULL, IS NOT NULL
 	if p.cur.Type == IS {
 		p.nextToken()
@@ -1162,16 +1186,25 @@ func (p *Parser) parseSelectItems() ([]string, []Expression, []AggregateExpr, []
 				columns = append(columns, colName)
 				columnExprs = append(columnExprs, expr)
 				hasExpr = true
-			}
-			if !hasExpr {
-				columns = append(columns, colName)
-				columnExprs = append(columnExprs, nil)
-			}
-			if p.peekIs(AS) {
-				p.nextToken()
-				if p.peekIs(IDENT) {
+				// After parseArithmeticExpr, p.cur is the first non-arithmetic token (possibly AS)
+				if p.curIs(AS) {
 					p.nextToken()
-					colAliases[p.cur.Literal] = colName
+					if p.cur.Type == IDENT {
+						colAliases[p.cur.Literal] = colName
+						p.nextToken()
+					}
+				}
+			} else {
+				if !hasExpr {
+					columns = append(columns, colName)
+					columnExprs = append(columnExprs, nil)
+				}
+				if p.peekIs(AS) {
+					p.nextToken()
+					if p.peekIs(IDENT) {
+						p.nextToken()
+						colAliases[p.cur.Literal] = colName
+					}
 				}
 			}
 		}
