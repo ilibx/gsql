@@ -38,6 +38,7 @@ func readGitLFSTable(tbl *catalog.Table, filters []PartitionFilter) ([]Row, erro
 
 	pattern := tbl.Option("file_pattern", "*")
 	format := strings.ToLower(tbl.Option("format", ""))
+	csvOpts := getCSVOpts(tbl)
 
 	if format == "" {
 		return nil, fmt.Errorf("missing format for table %s", tbl.Name)
@@ -90,7 +91,7 @@ func readGitLFSTable(tbl *catalog.Table, filters []PartitionFilter) ([]Row, erro
 
 			switch format {
 			case "csv":
-				rows, err := readCSVFromBytes(data, tbl.Columns)
+				rows, err := readCSVFromBytes(data, tbl.Columns, csvOpts)
 				resultCh <- fileResult{rows: rows, err: err}
 			case "json":
 				rows, err := readJSONFromBytes(data, tbl.Columns)
@@ -124,6 +125,7 @@ func writeGitLFSTable(tbl *catalog.Table, rows []Row, appendMode bool) error {
 
 	fileName := tbl.Option("file_name", "result.csv")
 	format := strings.ToLower(tbl.Option("format", "csv"))
+	csvOpts := getCSVOpts(tbl)
 
 	if appendMode {
 		fileName = fmt.Sprintf("append_%d_%s", len(rows), fileName)
@@ -134,7 +136,7 @@ func writeGitLFSTable(tbl *catalog.Table, rows []Row, appendMode bool) error {
 	switch format {
 	case "csv":
 		buf := &bytes.Buffer{}
-		if err := writeCSVToBuffer(buf, tbl.Columns, rows); err != nil {
+		if err := writeCSVToBuffer(buf, tbl.Columns, rows, csvOpts); err != nil {
 			return err
 		}
 		data = buf.Bytes()

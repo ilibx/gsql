@@ -10,6 +10,11 @@ import (
 	"github.com/ilibx/gsql/pkg/parser"
 )
 
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
 var rootDir string
 
 func init() {
@@ -103,3 +108,28 @@ func TestInsertOverwrite(t *testing.T) {
 		t.Fatal("expected output file samples/result/top_users.csv")
 	}
 }
+
+func TestInsertPartition(t *testing.T) {
+	if err := os.Chdir(rootDir); err != nil {
+		t.Fatalf("chdir to %s failed: %v", rootDir, err)
+	}
+	cat := catalog.NewCatalog()
+	eng := engine.NewEngine(cat)
+	runSQLOnEngine(t, eng, filepath.Join("tests", "setup.sql"))
+	runSQLOnEngine(t, eng, filepath.Join("tests", "test_insert_partition.sql"))
+
+	// verify partition directory structure
+	summaryFile := filepath.Join(rootDir, "samples", "result", "monthly", "year=2026", "summary.csv")
+	if !fileExists(summaryFile) {
+		t.Fatalf("expected partition output %s", summaryFile)
+	}
+}
+
+func TestCSVDelimiter(t *testing.T) {
+	runTestSQL(t, "csv_delimiter", "test_csv_delimiter.sql")
+}
+
+func TestCSVSkipHeader(t *testing.T) {
+	runTestSQL(t, "csv_skip_header", "test_csv_skip_header.sql")
+}
+

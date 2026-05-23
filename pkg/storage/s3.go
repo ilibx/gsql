@@ -133,7 +133,8 @@ func readS3Table(tbl *catalog.Table, filters []PartitionFilter) ([]Row, error) {
 
 			switch format {
 			case "csv":
-				rows, err := readCSVFromReader(obj.Body, tbl.Columns)
+				csvOpts := getCSVOpts(tbl)
+				rows, err := readCSVFromReader(obj.Body, tbl.Columns, csvOpts)
 				resultCh <- fileResult{rows: rows, err: err}
 			case "json":
 				rows, err := readJSONFromReader(obj.Body, tbl.Columns)
@@ -194,6 +195,7 @@ func writeS3Table(tbl *catalog.Table, rows []Row, appendMode bool) error {
 
 	fileName := tbl.Option("file_name", "result.csv")
 	format := strings.ToLower(tbl.Option("format", "csv"))
+	csvOpts := getCSVOpts(tbl)
 
 	if appendMode {
 		fileName = fmt.Sprintf("append_%d_%s", len(rows), fileName)
@@ -205,7 +207,7 @@ func writeS3Table(tbl *catalog.Table, rows []Row, appendMode bool) error {
 	switch format {
 	case "csv":
 		buf := &bytes.Buffer{}
-		if err := writeCSVToBuffer(buf, tbl.Columns, rows); err != nil {
+		if err := writeCSVToBuffer(buf, tbl.Columns, rows, csvOpts); err != nil {
 			return err
 		}
 		data = buf.Bytes()
@@ -243,9 +245,22 @@ func matchPattern(name, pattern string) bool {
 	return err == nil && matched
 }
 
-func readCSVFromReader(r io.Reader, columns []catalog.ColumnDef) ([]Row, error) {
+func readCSVFromReader(r io.Reader, columns []catalog.ColumnDef, opts CSVOptions) ([]Row, error) {
 	reader := csv.NewReader(r)
+	reader.Comma = opts.Delimiter
+	reader.LazyQuotes = true
 	reader.TrimLeadingSpace = true
+	reader.FieldsPerRecord = -1
+
+	// skip header lines
+	for i := 0; i < opts.SkipHeaderLines; i++ {
+		if _, err := reader.Read(); err != nil {
+			if err == io.EOF {
+				break
+			}
+			return nil, err
+		}
+	}
 
 	var rows []Row
 	for {
@@ -297,16 +312,17 @@ func readJSONFromReader(r io.Reader, columns []catalog.ColumnDef) ([]Row, error)
 	return rows, nil
 }
 
-func readCSVFromBytes(data []byte, columns []catalog.ColumnDef) ([]Row, error) {
-	return readCSVFromReader(bytes.NewReader(data), columns)
+func readCSVFromBytes(data []byte, columns []catalog.ColumnDef, opts CSVOptions) ([]Row, error) {
+	return readCSVFromReader(bytes.NewReader(data), columns, opts)
 }
 
 func readJSONFromBytes(data []byte, columns []catalog.ColumnDef) ([]Row, error) {
 	return readJSONFromReader(bytes.NewReader(data), columns)
 }
 
-func writeCSVToBuffer(buf io.Writer, columns []catalog.ColumnDef, rows []Row) error {
+func writeCSVToBuffer(buf io.Writer, columns []catalog.ColumnDef, rows []Row, opts CSVOptions) error {
 	writer := csv.NewWriter(buf)
+	writer.Comma = opts.Delimiter
 	defer writer.Flush()
 
 	for _, row := range rows {

@@ -8,10 +8,42 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/ilibx/gsql/pkg/catalog"
 )
+
+// CSVOptions holds Hive-style CSV parsing options.
+type CSVOptions struct {
+	Delimiter       rune // field separator (default: ',')
+	SkipHeaderLines int  // lines to skip at file start (default: 0)
+	Quote           rune // quote character (default: '"')
+	Escape          rune // escape character (default: '"')
+}
+
+func getCSVOpts(tbl *catalog.Table) CSVOptions {
+	opts := CSVOptions{
+		Delimiter: ',',
+		Quote:     '"',
+		Escape:    '"',
+	}
+	if d := tbl.Option("delimiter", ""); d != "" {
+		opts.Delimiter = []rune(d)[0]
+	}
+	if s := tbl.Option("skip_header_lines", ""); s != "" {
+		if n, err := strconv.Atoi(s); err == nil {
+			opts.SkipHeaderLines = n
+		}
+	}
+	if q := tbl.Option("quote_char", ""); q != "" {
+		opts.Quote = []rune(q)[0]
+	}
+	if e := tbl.Option("escape_char", ""); e != "" {
+		opts.Escape = []rune(e)[0]
+	}
+	return opts
+}
 
 func tempFilePattern(outputFile string) string {
 	if ext := filepath.Ext(outputFile); ext != "" {
@@ -74,7 +106,10 @@ func readLocalTable(tbl *catalog.Table, filters []PartitionFilter) ([]Row, error
 		return nil, fmt.Errorf("missing format for table %s", tbl.Name)
 	}
 
-	pattern := tbl.Option("file_pattern", "*")
+	pattern := tbl.Option("file_pattern", "")
+	if pattern == "" {
+		pattern = tbl.Option("file_name", "*")
+	}
 
 	var partitions []partitionFile
 	var err error
@@ -108,19 +143,20 @@ func readLocalTable(tbl *catalog.Table, filters []PartitionFilter) ([]Row, error
 	}
 
 	resultCh := make(chan fileResult, len(partitions))
-	for _, pf := range partitions {
-		go func(pf partitionFile) {
-			var fileRows []Row
-			var readErr error
-			switch format {
-			case "csv":
-				fileRows, readErr = readCSV(pf.Path, tbl.Columns)
-			case "json":
-				fileRows, readErr = readJSON(pf.Path, tbl.Columns)
-			default:
-				resultCh <- fileResult{err: fmt.Errorf("unsupported format %q", format)}
-				return
-			}
+		csvOpts := getCSVOpts(tbl)
+		for _, pf := range partitions {
+			go func(pf partitionFile) {
+				var fileRows []Row
+				var readErr error
+				switch format {
+				case "csv":
+					fileRows, readErr = readCSV(pf.Path, tbl.Columns, csvOpts)
+				case "json":
+					fileRows, readErr = readJSON(pf.Path, tbl.Columns)
+				default:
+					resultCh <- fileResult{err: fmt.Errorf("unsupported format %q", format)}
+					return
+				}
 			if readErr != nil {
 				resultCh <- fileResult{err: readErr}
 				return
@@ -292,13 +328,24 @@ func resolveLocalPaths(location, pattern string) ([]string, error) {
 
 	if info.IsDir() {
 		globPath := filepath.Join(location, pattern)
-		return filepath.Glob(globPath)
+		matches, err := filepath.Glob(globPath)
+		if err != nil {
+			return nil, err
+		}
+		// filter out directories
+		var files []string
+		for _, m := range matches {
+			if fi, statErr := os.Stat(m); statErr == nil && !fi.IsDir() {
+				files = append(files, m)
+			}
+		}
+		return files, nil
 	}
 
 	return []string{location}, nil
 }
 
-func readCSV(path string, columns []catalog.ColumnDef) ([]Row, error) {
+func readCSV(path string, columns []catalog.ColumnDef, opts CSVOptions) ([]Row, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, err
@@ -306,7 +353,20 @@ func readCSV(path string, columns []catalog.ColumnDef) ([]Row, error) {
 	defer file.Close()
 
 	reader := csv.NewReader(bufio.NewReader(file))
+	reader.Comma = opts.Delimiter
+	reader.LazyQuotes = true
 	reader.TrimLeadingSpace = true
+	reader.FieldsPerRecord = -1
+
+	// skip header lines
+	for i := 0; i < opts.SkipHeaderLines; i++ {
+		if _, err := reader.Read(); err != nil {
+			if err == io.EOF {
+				break
+			}
+			return nil, err
+		}
+	}
 
 	var rows []Row
 	for {
@@ -392,8 +452,10 @@ func writeLocalTable(tbl *catalog.Table, rows []Row, appendMode bool) error {
 	outputFile := tbl.Option("file_name", "result.csv")
 	format := strings.ToLower(tbl.Option("format", "csv"))
 
+	csvOpts := getCSVOpts(tbl)
+
 	if len(tbl.PartitionBy) > 0 {
-		return writePartitionedTable(location, outputFile, format, tbl, rows, appendMode)
+		return writePartitionedTable(location, outputFile, format, tbl, rows, appendMode, csvOpts)
 	}
 	if err := os.MkdirAll(location, 0o755); err != nil {
 		return err
@@ -413,7 +475,7 @@ func writeLocalTable(tbl *catalog.Table, rows []Row, appendMode bool) error {
 	tmpPath := outputPath + ".tmp"
 	switch format {
 	case "csv":
-		if err := writeCSV(tmpPath, tbl.Columns, rows); err != nil {
+		if err := writeCSV(tmpPath, tbl.Columns, rows, csvOpts); err != nil {
 			os.Remove(tmpPath)
 			return err
 		}
@@ -433,7 +495,7 @@ func writeLocalTable(tbl *catalog.Table, rows []Row, appendMode bool) error {
 	return nil
 }
 
-func writePartitionedTable(location, outputFile, format string, tbl *catalog.Table, rows []Row, appendMode bool) error {
+func writePartitionedTable(location, outputFile, format string, tbl *catalog.Table, rows []Row, appendMode bool, csvOpts CSVOptions) error {
 	partitionCols := tbl.PartitionBy
 
 	partitions := make(map[string][]Row)
@@ -468,7 +530,7 @@ func writePartitionedTable(location, outputFile, format string, tbl *catalog.Tab
 		tmpPath := outPath + ".tmp"
 		switch format {
 		case "csv":
-			if err := writeCSV(tmpPath, tbl.Columns, partRows); err != nil {
+			if err := writeCSV(tmpPath, tbl.Columns, partRows, csvOpts); err != nil {
 				os.Remove(tmpPath)
 				return err
 			}
@@ -488,7 +550,7 @@ func writePartitionedTable(location, outputFile, format string, tbl *catalog.Tab
 	return nil
 }
 
-func writeCSV(path string, columns []catalog.ColumnDef, rows []Row) error {
+func writeCSV(path string, columns []catalog.ColumnDef, rows []Row, opts CSVOptions) error {
 	file, err := os.Create(path)
 	if err != nil {
 		return err
@@ -496,6 +558,7 @@ func writeCSV(path string, columns []catalog.ColumnDef, rows []Row) error {
 	defer file.Close()
 
 	writer := csv.NewWriter(file)
+	writer.Comma = opts.Delimiter
 	defer writer.Flush()
 
 	for _, row := range rows {

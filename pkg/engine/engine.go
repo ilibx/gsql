@@ -70,8 +70,29 @@ func (e *Engine) executeInsertOverwrite(stmt *parser.InsertOverwriteStmt) error 
 		return err
 	}
 
-	if err := storage.WriteRows(target, rows, stmt.Append); err != nil {
+	// position-based remap: SELECT col i -> target (data+partition) col i
+	// skip for SELECT * (wildcard) since column names are used directly
+	if !(len(stmt.Query.Columns) == 1 && stmt.Query.Columns[0] == "*") {
+		// target columns in order: data columns first, then partition columns
+		targetCols := make([]string, 0, len(target.Columns)+len(target.PartitionBy))
+		for _, c := range target.Columns {
+			targetCols = append(targetCols, c.Name)
+		}
+		targetCols = append(targetCols, target.PartitionBy...)
 
+		for ri, row := range rows {
+			nr := make(storage.Row)
+			for i, origCol := range stmt.Query.Columns {
+				stripped := stripTableAlias(origCol)
+				if i < len(targetCols) {
+					nr[targetCols[i]] = row[stripped]
+				}
+			}
+			rows[ri] = nr
+		}
+	}
+
+	if err := storage.WriteRows(target, rows, stmt.Append); err != nil {
 		return fmt.Errorf("write target table %s failed: %w", stmt.TableName, err)
 	}
 	if e.Verbose {
@@ -284,8 +305,21 @@ func (e *Engine) addProjection(root plan.LogicalNode, sel *parser.SelectQuery) p
 }
 
 func stripTableAlias(col string) string {
+	// strip table alias from qualified name: "u.name" -> "name"
+	// only if the dot is not inside a function call
 	if idx := strings.IndexByte(col, '.'); idx >= 0 {
-		return col[idx+1:]
+		parenIdx := strings.IndexByte(col, '(')
+		if parenIdx == -1 || idx < parenIdx {
+			return col[idx+1:]
+		}
+	}
+	// strip table alias from function argument: "SUM(o.amount)" -> "SUM(amount)"
+	if idx := strings.IndexByte(col, '('); idx >= 0 && col[len(col)-1] == ')' {
+		funcName := col[:idx]
+		arg := col[idx+1 : len(col)-1]
+		if argIdx := strings.IndexByte(arg, '.'); argIdx >= 0 {
+			return funcName + "(" + arg[argIdx+1:] + ")"
+		}
 	}
 	return col
 }

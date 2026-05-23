@@ -40,3 +40,19 @@ WITH (
   location = 'samples/orders',
   file_pattern = '*.csv'
 );
+
+CREATE TABLE partitioned_orders (
+  order_id INT,
+  user_id INT,
+  product_id INT,
+  quantity INT,
+  amount INT,
+  order_date STRING
+)
+WITH (
+  storage = 'local',
+  format = 'csv',
+  location = 'samples/orders',
+  file_pattern = 'data.csv'
+)
+PARTITIONED BY (year, month);

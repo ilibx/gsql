@@ -64,6 +64,7 @@ func readFTPTable(tbl *catalog.Table, filters []PartitionFilter) ([]Row, error) 
 	pass := tbl.Option(passKey, "")
 	pattern := tbl.Option("file_pattern", "*")
 	format := strings.ToLower(tbl.Option("format", ""))
+	csvOpts := getCSVOpts(tbl)
 
 	if format == "" {
 		return nil, fmt.Errorf("missing format for table %s", tbl.Name)
@@ -154,7 +155,7 @@ func readFTPTable(tbl *catalog.Table, filters []PartitionFilter) ([]Row, error) 
 
 			switch format {
 			case "csv":
-				rows, err := readCSVFromBytes(body, tbl.Columns)
+				rows, err := readCSVFromBytes(body, tbl.Columns, csvOpts)
 				resultCh <- fileResult{rows: rows, err: err}
 			case "json":
 				rows, err := readJSONFromBytes(body, tbl.Columns)
@@ -193,6 +194,7 @@ func readSFTPTable(tbl *catalog.Table, filters []PartitionFilter) ([]Row, error)
 	pass := tbl.Option(passKey, "")
 	pattern := tbl.Option("file_pattern", "*")
 	format := strings.ToLower(tbl.Option("format", ""))
+	csvOpts := getCSVOpts(tbl)
 
 	if format == "" {
 		return nil, fmt.Errorf("missing format for table %s", tbl.Name)
@@ -279,7 +281,7 @@ func readSFTPTable(tbl *catalog.Table, filters []PartitionFilter) ([]Row, error)
 
 			switch format {
 			case "csv":
-				rows, err := readCSVFromBytes(body, tbl.Columns)
+				rows, err := readCSVFromBytes(body, tbl.Columns, csvOpts)
 				resultCh <- fileResult{rows: rows, err: err}
 			case "json":
 				rows, err := readJSONFromBytes(body, tbl.Columns)
@@ -314,6 +316,7 @@ func readWebDAVTable(tbl *catalog.Table, filters []PartitionFilter) ([]Row, erro
 	path := tbl.Option(pathKey, "")
 	pattern := tbl.Option("file_pattern", "*")
 	format := strings.ToLower(tbl.Option("format", ""))
+	csvOpts := getCSVOpts(tbl)
 
 	if format == "" {
 		return nil, fmt.Errorf("missing format for table %s", tbl.Name)
@@ -358,7 +361,7 @@ func readWebDAVTable(tbl *catalog.Table, filters []PartitionFilter) ([]Row, erro
 
 			switch format {
 			case "csv":
-				rows, err := readCSVFromBytes(body, tbl.Columns)
+				rows, err := readCSVFromBytes(body, tbl.Columns, csvOpts)
 				resultCh <- fileResult{rows: rows, err: err}
 			case "json":
 				rows, err := readJSONFromBytes(body, tbl.Columns)
@@ -397,6 +400,7 @@ func writeFTPTable(tbl *catalog.Table, rows []Row, appendMode bool) error {
 	pass := tbl.Option(passKey, "")
 	fileName := tbl.Option("file_name", "result.csv")
 	format := strings.ToLower(tbl.Option("format", "csv"))
+	csvOpts := getCSVOpts(tbl)
 
 	if appendMode {
 		fileName = fmt.Sprintf("append_%d_%s", len(rows), fileName)
@@ -407,7 +411,7 @@ func writeFTPTable(tbl *catalog.Table, rows []Row, appendMode bool) error {
 	switch format {
 	case "csv":
 		buf := &bytes.Buffer{}
-		if err := writeCSVToBuffer(buf, tbl.Columns, rows); err != nil {
+		if err := writeCSVToBuffer(buf, tbl.Columns, rows, csvOpts); err != nil {
 			return err
 		}
 		data = buf.Bytes()
@@ -463,6 +467,7 @@ func writeSFTPTable(tbl *catalog.Table, rows []Row, appendMode bool) error {
 	pass := tbl.Option(passKey, "")
 	fileName := tbl.Option("file_name", "result.csv")
 	format := strings.ToLower(tbl.Option("format", "csv"))
+	csvOpts := getCSVOpts(tbl)
 
 	if appendMode {
 		fileName = fmt.Sprintf("append_%d_%s", len(rows), fileName)
@@ -472,7 +477,7 @@ func writeSFTPTable(tbl *catalog.Table, rows []Row, appendMode bool) error {
 	switch format {
 	case "csv":
 		buf := &bytes.Buffer{}
-		if err := writeCSVToBuffer(buf, tbl.Columns, rows); err != nil {
+		if err := writeCSVToBuffer(buf, tbl.Columns, rows, csvOpts); err != nil {
 			return err
 		}
 		data = buf.Bytes()
@@ -532,6 +537,7 @@ func writeWebDAVTable(tbl *catalog.Table, rows []Row, appendMode bool) error {
 	path := tbl.Option(pathKey, "")
 	fileName := tbl.Option("file_name", "result.csv")
 	format := strings.ToLower(tbl.Option("format", "csv"))
+	csvOpts := getCSVOpts(tbl)
 
 	if appendMode {
 		fileName = fmt.Sprintf("append_%d_%s", len(rows), fileName)
@@ -541,7 +547,7 @@ func writeWebDAVTable(tbl *catalog.Table, rows []Row, appendMode bool) error {
 	switch format {
 	case "csv":
 		buf := &bytes.Buffer{}
-		if err := writeCSVToBuffer(buf, tbl.Columns, rows); err != nil {
+		if err := writeCSVToBuffer(buf, tbl.Columns, rows, csvOpts); err != nil {
 			return err
 		}
 		data = buf.Bytes()
