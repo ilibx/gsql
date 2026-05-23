@@ -96,3 +96,23 @@ func TestQueryInsertOverwrite(t *testing.T) {
 		t.Fatal("expected output file samples/result/top_users.csv")
 	}
 }
+
+func TestQueryHiveCoverage(t *testing.T) {
+	if err := os.Chdir(rootDir); err != nil {
+		t.Fatalf("chdir to %s failed: %v", rootDir, err)
+	}
+	cat := catalog.NewCatalog()
+	eng := engine.NewEngine(cat)
+	runSQLOnEngine(t, eng, filepath.Join("samples", "setup.sql"))
+	runSQLOnEngine(t, eng, filepath.Join("samples", "query_hive_coverage.sql"))
+}
+
+func TestQueryHiveSyntax(t *testing.T) {
+	if err := os.Chdir(rootDir); err != nil {
+		t.Fatalf("chdir to %s failed: %v", rootDir, err)
+	}
+	cat := catalog.NewCatalog()
+	eng := engine.NewEngine(cat)
+	runSQLOnEngine(t, eng, filepath.Join("samples", "setup.sql"))
+	runSQLOnEngine(t, eng, filepath.Join("samples", "query_hive_syntax.sql"))
+}
