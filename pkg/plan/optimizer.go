@@ -230,6 +230,9 @@ func collectExprCols(expr parser.Expression, cols map[string]bool) {
 	switch v := expr.(type) {
 	case *parser.ComparisonExpr:
 		cols[v.Column] = true
+		if v.RightColumn != "" {
+			cols[v.RightColumn] = true
+		}
 	case *parser.LogicalExpr:
 		collectExprCols(v.Left, cols)
 		collectExprCols(v.Right, cols)

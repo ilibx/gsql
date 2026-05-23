@@ -82,6 +82,7 @@ const (
 	THEN_KW
 	ELSE_KW
 	END_KW
+	EXISTS_KW
 )
 
 var keywords = map[string]TokenType{
@@ -117,8 +118,9 @@ var keywords = map[string]TokenType{
 	"case":      CASE_KW,
 	"when":      WHEN_KW,
 	"then":      THEN_KW,
-	"else":      ELSE_KW,
-	"end":       END_KW,
+	"else":       ELSE_KW,
+	"end":        END_KW,
+	"exists":     EXISTS_KW,
 }
 
 func NewParser() *Parser {
@@ -295,6 +297,8 @@ func (t TokenType) String() string {
 		return "ELSE"
 	case END_KW:
 		return "END"
+	case EXISTS_KW:
+		return "EXISTS"
 	default:
 		return ""
 	}
@@ -713,6 +717,7 @@ func (p *Parser) parseSelectQuery() (*SelectQuery, error) {
 	var having Expression
 	var orderBy []SortOrder
 	var limit int
+	var hasLimit bool
 	if p.cur.Type == WHERE {
 		p.nextToken()
 		where, err = p.parseExpression()
@@ -762,25 +767,27 @@ func (p *Parser) parseSelectQuery() (*SelectQuery, error) {
 		if err != nil {
 			return nil, fmt.Errorf("invalid LIMIT value: %w", err)
 		}
+		hasLimit = true
 		p.nextToken()
 	}
 	query := &SelectQuery{
 		CTEs:          ctes,
 		Columns:       columns,
-		ColumnExprs:   columnExprs,
-		Aggregates:    aggregates,
-		WindowExprs:   windowExprs,
-		Distinct:      distinct,
 		Table:         tableName,
 		TableAlias:    tableAlias,
 		FromSubquery:  fromSubquery,
 		FromAlias:     fromAlias,
+		ColumnExprs:   columnExprs,
+		Aggregates:    aggregates,
+		WindowExprs:   windowExprs,
 		Joins:         joins,
+		Distinct:      distinct,
 		Where:         where,
 		GroupBy:       groupBy,
 		Having:        having,
 		OrderBy:       orderBy,
 		Limit:         limit,
+		HasLimit:      hasLimit,
 		ColumnAliases: colAliases,
 	}
 	if len(aggregates) > 0 && len(groupBy) == 0 && len(columns) == 0 {
@@ -945,6 +952,43 @@ func (p *Parser) parseComparison() (Expression, error) {
 		return p.parsePostAggregateOp(left)
 	}
 
+	// Check for NOT EXISTS
+	if p.cur.Type == NOT && p.peek.Type == EXISTS_KW {
+		p.nextToken()
+		p.nextToken()
+		if p.cur.Type != LPAREN {
+			return nil, fmt.Errorf("expected ( after NOT EXISTS")
+		}
+		p.nextToken()
+		subquery, err := p.parseSelectQuery()
+		if err != nil {
+			return nil, fmt.Errorf("NOT EXISTS subquery: %w", err)
+		}
+		if p.cur.Type != RPAREN {
+			return nil, fmt.Errorf("expected ) after NOT EXISTS subquery")
+		}
+		p.nextToken()
+		return &ExistsExpr{Not: true, Subquery: subquery}, nil
+	}
+
+	// Check for EXISTS / NOT EXISTS
+	if p.cur.Type == EXISTS_KW {
+		p.nextToken()
+		if p.cur.Type != LPAREN {
+			return nil, fmt.Errorf("expected ( after EXISTS")
+		}
+		p.nextToken()
+		subquery, err := p.parseSelectQuery()
+		if err != nil {
+			return nil, fmt.Errorf("EXISTS subquery: %w", err)
+		}
+		if p.cur.Type != RPAREN {
+			return nil, fmt.Errorf("expected ) after EXISTS subquery")
+		}
+		p.nextToken()
+		return &ExistsExpr{Subquery: subquery}, nil
+	}
+
 	if p.cur.Type != IDENT {
 		return nil, fmt.Errorf("expected column name in expression, got %s", tokenName(p.cur.Type))
 	}
@@ -994,6 +1038,13 @@ func (p *Parser) parseComparison() (Expression, error) {
 		}
 		operator := p.cur.Literal
 		p.nextToken()
+		if p.cur.Type == IDENT {
+			rightCol, parseErr := p.parseDottedIdentifier()
+			if parseErr != nil {
+				return nil, parseErr
+			}
+			return &ComparisonExpr{Column: col, Operator: operator, RightColumn: rightCol}, nil
+		}
 		if p.cur.Type != STRING && p.cur.Type != NUMBER {
 			return nil, fmt.Errorf("expected literal on right side of expression, got %s", tokenName(p.cur.Type))
 		}
@@ -1035,6 +1086,13 @@ func (p *Parser) parsePostAggregateOp(left string) (Expression, error) {
 	}
 	operator := p.cur.Literal
 	p.nextToken()
+	if p.cur.Type == IDENT {
+		rightCol, parseErr := p.parseDottedIdentifier()
+		if parseErr != nil {
+			return nil, parseErr
+		}
+		return &ComparisonExpr{Column: left, Operator: operator, RightColumn: rightCol}, nil
+	}
 	if p.cur.Type != STRING && p.cur.Type != NUMBER {
 		return nil, fmt.Errorf("expected literal on right side of expression, got %s", tokenName(p.cur.Type))
 	}
@@ -1048,6 +1106,20 @@ func (p *Parser) parseInExpr(col string, not bool) (Expression, error) {
 		return nil, fmt.Errorf("expected ( after IN")
 	}
 	p.nextToken()
+
+	// Check for subquery: IN (SELECT ...)
+	if p.cur.Type == SELECT {
+		subquery, err := p.parseSelectQuery()
+		if err != nil {
+			return nil, fmt.Errorf("IN subquery: %w", err)
+		}
+		if p.cur.Type != RPAREN {
+			return nil, fmt.Errorf("expected ) after IN subquery")
+		}
+		p.nextToken()
+		return &InExpr{Column: col, Not: not, Subquery: subquery}, nil
+	}
+
 	var values []string
 	for {
 		if p.cur.Type != STRING && p.cur.Type != NUMBER {
@@ -1114,13 +1186,38 @@ func (p *Parser) parseSelectItems() ([]string, []Expression, []AggregateExpr, []
 			break
 		}
 		if p.cur.Type != IDENT {
+			// Literal expressions: STRING or NUMBER in SELECT (e.g., '2026' AS year)
+			if p.cur.Type == STRING || p.cur.Type == NUMBER {
+				litKey := fmt.Sprintf("LITERAL_%d", len(columns))
+				columnExprs = append(columnExprs, &LiteralExpr{Value: p.cur.Literal})
+				columns = append(columns, litKey)
+				aggregates = append(aggregates, AggregateExpr{})
+				windowExprs = append(windowExprs, WindowExpr{})
+				if p.peekIs(AS) {
+					p.nextToken()
+					p.nextToken()
+					if p.cur.Type == IDENT {
+						colAliases[p.cur.Literal] = litKey
+					}
+				}
+				if p.cur.Type == COMMA {
+					p.nextToken()
+					continue
+				}
+				break
+			}
 			return nil, nil, nil, nil, nil, fmt.Errorf("expected column name or aggregate function, got %s", tokenName(p.cur.Type))
 		}
 		ident := p.cur.Literal
 		if p.peekIs(LPAREN) {
 			funcName := strings.ToUpper(ident)
+			distinct := false
 			p.nextToken()
 			p.nextToken()
+			if p.cur.Type == DISTINCT {
+				distinct = true
+				p.nextToken()
+			}
 			var args []string
 			if p.cur.Type == ASTERISK {
 				args = []string{"*"}
@@ -1146,7 +1243,11 @@ func (p *Parser) parseSelectItems() ([]string, []Expression, []AggregateExpr, []
 			if len(args) > 0 {
 				argStr = args[0]
 			}
-			colKey := funcName + "(" + argStr + ")"
+			distinctPrefix := ""
+			if distinct {
+				distinctPrefix = "DISTINCT "
+			}
+			colKey := funcName + "(" + distinctPrefix + argStr + ")"
 
 			if p.peekIs(OVER) {
 				// Window function: OVER (PARTITION BY ... ORDER BY ...)
@@ -1166,7 +1267,7 @@ func (p *Parser) parseSelectItems() ([]string, []Expression, []AggregateExpr, []
 					}
 				}
 			} else {
-				aggregates = append(aggregates, AggregateExpr{FuncName: funcName, Column: argStr})
+				aggregates = append(aggregates, AggregateExpr{FuncName: funcName, Column: argStr, Distinct: distinct})
 				columns = append(columns, colKey)
 				columnExprs = append(columnExprs, nil)
 				if p.peekIs(AS) {
@@ -1410,7 +1511,10 @@ func exprToString(expr Expression) string {
 	case *BinaryExpr:
 		return "(" + exprToString(v.Left) + " " + v.Operator + " " + exprToString(v.Right) + ")"
 	case *ComparisonExpr:
-		return v.Value
+		if v.RightColumn != "" {
+			return v.Column + " " + v.Operator + " " + v.RightColumn
+		}
+		return v.Column + " " + v.Operator + " " + v.Value
 	default:
 		return ""
 	}

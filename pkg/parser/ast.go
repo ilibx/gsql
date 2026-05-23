@@ -50,9 +50,10 @@ type Expression interface {
 }
 
 type ComparisonExpr struct {
-	Column   string
-	Operator string
-	Value    string
+	Column      string
+	Operator    string
+	Value       string
+	RightColumn string // set for column-to-column comparisons (WHERE a = b)
 }
 
 func (e *ComparisonExpr) expressionNode() {}
@@ -68,6 +69,7 @@ func (e *LogicalExpr) expressionNode() {}
 type AggregateExpr struct {
 	FuncName string // COUNT, SUM, AVG, MIN, MAX
 	Column   string // column name or "*"
+	Distinct bool   // true for COUNT(DISTINCT col)
 }
 
 type CTE struct {
@@ -90,12 +92,20 @@ type NullTestExpr struct {
 func (e *NullTestExpr) expressionNode() {}
 
 type InExpr struct {
-	Column string
-	Not    bool // true for NOT IN
-	Values []string
+	Column   string
+	Not      bool // true for NOT IN
+	Values   []string
+	Subquery *SelectQuery // non-nil for IN (SELECT ...)
 }
 
 func (e *InExpr) expressionNode() {}
+
+type ExistsExpr struct {
+	Not      bool // true for NOT EXISTS
+	Subquery *SelectQuery
+}
+
+func (e *ExistsExpr) expressionNode() {}
 
 type BinaryExpr struct {
 	Left     Expression
@@ -122,6 +132,13 @@ type CaseExpr struct {
 }
 
 func (e *CaseExpr) expressionNode() {}
+
+// LiteralExpr represents a literal value in a SELECT expression (e.g., '2026' AS year)
+type LiteralExpr struct {
+	Value string
+}
+
+func (e *LiteralExpr) expressionNode() {}
 
 type SortOrder struct {
 	Column string
@@ -152,6 +169,7 @@ type SelectQuery struct {
 	Having        Expression
 	OrderBy       []SortOrder
 	Limit         int
+	HasLimit      bool
 	Aggregates    []AggregateExpr
 	WindowExprs   []WindowExpr  // parallel to Columns, nil means no window function
 	ColumnAliases map[string]string

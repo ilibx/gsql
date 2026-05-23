@@ -15,6 +15,7 @@ import (
 type AggregateDef struct {
 	FuncName string
 	Column   string
+	Distinct bool
 }
 
 type PlanNode interface {
@@ -247,7 +248,7 @@ func (n *LimitNode) Execute() ([]storage.Row, error) {
 	if err != nil {
 		return nil, err
 	}
-	if n.N >= len(rows) || n.N <= 0 {
+	if n.N >= len(rows) || n.N < 0 {
 		return rows, nil
 	}
 	return rows[:n.N], nil
@@ -312,8 +313,12 @@ func (n *AggregateNode) Execute() ([]storage.Row, error) {
 			}
 		}
 		for _, agg := range n.Aggregates {
-			colKey := agg.FuncName + "(" + agg.Column + ")"
-			row[colKey] = computeAggregate(ge.group, agg.FuncName, agg.Column)
+			distinctPrefix := ""
+			if agg.Distinct {
+				distinctPrefix = "DISTINCT "
+			}
+			colKey := agg.FuncName + "(" + distinctPrefix + agg.Column + ")"
+			row[colKey] = computeAggregate(ge.group, agg.FuncName, agg.Column, agg.Distinct)
 		}
 		result = append(result, row)
 	}
@@ -324,7 +329,11 @@ func (n *AggregateNode) Explain(indent int) string {
 	prefix := strings.Repeat("  ", indent)
 	aggParts := make([]string, len(n.Aggregates))
 	for i, agg := range n.Aggregates {
-		aggParts[i] = agg.FuncName + "(" + agg.Column + ")"
+		if agg.Distinct {
+			aggParts[i] = agg.FuncName + "(DISTINCT " + agg.Column + ")"
+		} else {
+			aggParts[i] = agg.FuncName + "(" + agg.Column + ")"
+		}
 	}
 	gb := strings.Join(n.GroupBy, ", ")
 	return fmt.Sprintf("%sAggregate(GroupBy=[%s], Aggregates=[%s])\n%s", prefix, gb, strings.Join(aggParts, ", "), n.Child.Explain(indent+1))
@@ -338,9 +347,20 @@ func makeGroupKey(row storage.Row, cols []string) string {
 	return strings.Join(parts, "\x00")
 }
 
-func computeAggregate(rows []storage.Row, funcName, column string) string {
+func computeAggregate(rows []storage.Row, funcName, column string, distinct bool) string {
 	switch funcName {
 	case "COUNT":
+		if distinct {
+			seen := make(map[string]bool)
+			for _, row := range rows {
+				if column == "*" {
+					seen["*"] = true
+				} else if v := row[column]; v != "" {
+					seen[v] = true
+				}
+			}
+			return strconv.Itoa(len(seen))
+		}
 		return strconv.Itoa(len(rows))
 	case "SUM":
 		var total float64
@@ -583,22 +603,57 @@ func sortRows(rows []storage.Row, orderBy []parser.SortOrder) {
 	sort.SliceStable(rows, func(i, j int) bool {
 		for _, o := range orderBy {
 			vi, vj := rows[i][o.Column], rows[j][o.Column]
-			if vi != vj {
+			cmp := compareNumeric(vi, vj)
+			if cmp != 0 {
 				if o.Desc {
-					return vi > vj
+					return cmp > 0
 				}
-				return vi < vj
+				return cmp < 0
 			}
 		}
 		return false
 	})
 }
 
+// compareNumeric compares two string values. If both can be parsed as numbers,
+// it compares numerically. Otherwise it compares lexicographically.
+// Returns -1 if a < b, 0 if a == b, 1 if a > b.
+func compareNumeric(a, b string) int {
+	if a == b {
+		return 0
+	}
+	fa, errA := strconv.ParseFloat(a, 64)
+	fb, errB := strconv.ParseFloat(b, 64)
+	if errA == nil && errB == nil {
+		if fa < fb {
+			return -1
+		}
+		if fa > fb {
+			return 1
+		}
+		return 0
+	}
+	if a < b {
+		return -1
+	}
+	return 1
+}
+
 func evaluateExpression(row storage.Row, expr parser.Expression) bool {
 	switch v := expr.(type) {
 	case *parser.ComparisonExpr:
-		left := row[v.Column]
-		right := v.Value
+		var left string
+		if v.Column == "" {
+			left = v.Value
+		} else {
+			left = row[v.Column]
+		}
+		var right string
+		if v.RightColumn != "" {
+			right = row[v.RightColumn]
+		} else {
+			right = v.Value
+		}
 		switch v.Operator {
 		case "=":
 			return left == right
@@ -665,6 +720,9 @@ func evaluateExpressionValue(row storage.Row, expr parser.Expression) string {
 	case *parser.ColumnRef:
 		return row[v.Name]
 	case *parser.ComparisonExpr:
+		if v.RightColumn != "" {
+			return row[v.RightColumn]
+		}
 		if v.Column == "" {
 			return v.Value
 		}
@@ -739,6 +797,8 @@ func evaluateExpressionValue(row storage.Row, expr parser.Expression) string {
 			return evaluateExpressionValue(row, v.Else)
 		}
 		return ""
+	case *parser.LiteralExpr:
+		return v.Value
 	default:
 		return ""
 	}
@@ -838,7 +898,7 @@ func extractPartitionFilters(expr parser.Expression, partitionCols []string) (pa
 		}
 		switch v := e.(type) {
 		case *parser.ComparisonExpr:
-			if isPartitionOp(v.Operator) && isPartition(v.Column) {
+			if v.RightColumn == "" && isPartitionOp(v.Operator) && isPartition(v.Column) {
 				filters = append(filters, storage.PartitionFilter{Column: v.Column, Operator: v.Operator, Value: v.Value})
 				return nil
 			}
@@ -959,6 +1019,9 @@ func LogicalToPhysical(node LogicalNode, ctx *PhysicalPlanContext) (PlanNode, er
 func expressionToString(expr parser.Expression) string {
 	switch v := expr.(type) {
 	case *parser.ComparisonExpr:
+		if v.RightColumn != "" {
+			return fmt.Sprintf("%s %s %s", v.Column, v.Operator, v.RightColumn)
+		}
 		return fmt.Sprintf("%s %s '%s'", v.Column, v.Operator, v.Value)
 	case *parser.LogicalExpr:
 		return fmt.Sprintf("(%s %s %s)", expressionToString(v.Left), v.Operator, expressionToString(v.Right))

@@ -180,6 +180,10 @@ func (e *Engine) executeSelectWithCTEs(query *parser.SelectQuery, cteTables map[
 }
 
 func (e *Engine) buildLogicalPlan(sel *parser.SelectQuery, cteTables map[string][]storage.Row) (plan.LogicalNode, error) {
+	// Resolve subquery expressions (IN/EXISTS) before building the plan
+	if err := e.resolveSubqueryExprs(sel, cteTables); err != nil {
+		return nil, err
+	}
 	root := e.buildBaseRelation(sel, cteTables)
 	root = e.addJoins(root, sel, cteTables)
 	root = e.addFiltersAndGrouping(root, sel)
@@ -234,7 +238,7 @@ func (e *Engine) addFiltersAndGrouping(root plan.LogicalNode, sel *parser.Select
 	if len(groupBy) > 0 || len(sel.Aggregates) > 0 {
 		aggDefs := make([]plan.AggregateDef, len(sel.Aggregates))
 		for i, agg := range sel.Aggregates {
-			aggDefs[i] = plan.AggregateDef{FuncName: agg.FuncName, Column: stripTableAlias(agg.Column)}
+			aggDefs[i] = plan.AggregateDef{FuncName: agg.FuncName, Column: stripTableAlias(agg.Column), Distinct: agg.Distinct}
 		}
 		root = plan.NewLogicalAggregate(root, groupBy, aggDefs)
 	}
@@ -305,21 +309,30 @@ func (e *Engine) addSortAndLimit(root plan.LogicalNode, sel *parser.SelectQuery)
 		root = plan.NewLogicalSort(root, orderBy)
 	}
 
-	if sel.Limit > 0 {
+	if sel.HasLimit {
 		root = plan.NewLogicalLimit(root, sel.Limit)
 	}
 	return root
 }
 
 func (e *Engine) addProjection(root plan.LogicalNode, sel *parser.SelectQuery) plan.LogicalNode {
-	columns := make([]string, len(sel.Columns))
-	columnExprs := make([]parser.Expression, len(sel.Columns))
+	var columns []string
+	var columnExprs []parser.Expression
 	for i, col := range sel.Columns {
-		columns[i] = stripTableAlias(col)
-	}
-	for i, expr := range sel.ColumnExprs {
-		if i < len(columnExprs) {
-			columnExprs[i] = expr
+		if stripTableAlias(col) == "*" {
+			expanded := e.expandStarColumns(sel)
+			for _, ec := range expanded {
+				colName := stripTableAlias(ec)
+				columns = append(columns, colName)
+				columnExprs = append(columnExprs, nil)
+			}
+			continue
+		}
+		columns = append(columns, stripTableAlias(col))
+		if i < len(sel.ColumnExprs) {
+			columnExprs = append(columnExprs, sel.ColumnExprs[i])
+		} else {
+			columnExprs = append(columnExprs, nil)
 		}
 	}
 
@@ -331,6 +344,40 @@ func (e *Engine) addProjection(root plan.LogicalNode, sel *parser.SelectQuery) p
 		root = plan.NewLogicalProject(root, columns, columnExprs)
 	}
 	return root
+}
+
+func (e *Engine) expandStarColumns(sel *parser.SelectQuery) []string {
+	var expanded []string
+
+	if sel.Table != "" {
+		if t, ok := e.catalog.GetTable(sel.Table); ok {
+			prefix := sel.TableAlias
+			for _, colDef := range t.Columns {
+				if prefix != "" {
+					expanded = append(expanded, prefix+"."+colDef.Name)
+				} else {
+					expanded = append(expanded, colDef.Name)
+				}
+			}
+		}
+	}
+
+	for _, join := range sel.Joins {
+		if t, ok := e.catalog.GetTable(join.RightTable); ok {
+			prefix := join.RightAlias
+			if prefix == "" {
+				prefix = join.RightTable
+			}
+			for _, colDef := range t.Columns {
+				expanded = append(expanded, prefix+"."+colDef.Name)
+			}
+		}
+	}
+
+	if len(expanded) == 0 {
+		expanded = append(expanded, "*")
+	}
+	return expanded
 }
 
 func stripTableAlias(col string) string {
@@ -351,6 +398,102 @@ func stripTableAlias(col string) string {
 		}
 	}
 	return col
+}
+
+func (e *Engine) resolveSubqueryExprs(sel *parser.SelectQuery, cteTables map[string][]storage.Row) error {
+	var err error
+	if sel.Where != nil {
+		sel.Where, err = e.resolveExprSubqueries(sel.Where, cteTables)
+		if err != nil {
+			return err
+		}
+	}
+	if sel.Having != nil {
+		sel.Having, err = e.resolveExprSubqueries(sel.Having, cteTables)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (e *Engine) resolveExprSubqueries(expr parser.Expression, cteTables map[string][]storage.Row) (parser.Expression, error) {
+	if expr == nil {
+		return nil, nil
+	}
+	switch v := expr.(type) {
+	case *parser.InExpr:
+		if v.Subquery != nil {
+			rows, err := e.executeSelectWithCTEs(v.Subquery, cteTables)
+			if err != nil {
+				return nil, fmt.Errorf("IN subquery: %w", err)
+			}
+			values := make([]string, 0, len(rows))
+			for _, row := range rows {
+				for _, val := range row {
+					values = append(values, val)
+					break // only first column
+				}
+			}
+			return &parser.InExpr{Column: v.Column, Not: v.Not, Values: values}, nil
+		}
+		return expr, nil
+	case *parser.ExistsExpr:
+		rows, err := e.executeSelectWithCTEs(v.Subquery, cteTables)
+		if err != nil {
+			return nil, fmt.Errorf("EXISTS subquery: %w", err)
+		}
+		exists := len(rows) > 0
+		if v.Not {
+			exists = !exists
+		}
+		if exists {
+			return &parser.ComparisonExpr{Column: "", Operator: "=", Value: "1"}, nil
+		}
+		return &parser.ComparisonExpr{Column: "", Operator: "=", Value: "0"}, nil
+	case *parser.LogicalExpr:
+		left, err := e.resolveExprSubqueries(v.Left, cteTables)
+		if err != nil {
+			return nil, err
+		}
+		right, err := e.resolveExprSubqueries(v.Right, cteTables)
+		if err != nil {
+			return nil, err
+		}
+		return &parser.LogicalExpr{Left: left, Operator: v.Operator, Right: right}, nil
+	case *parser.BinaryExpr:
+		left, err := e.resolveExprSubqueries(v.Left, cteTables)
+		if err != nil {
+			return nil, err
+		}
+		right, err := e.resolveExprSubqueries(v.Right, cteTables)
+		if err != nil {
+			return nil, err
+		}
+		return &parser.BinaryExpr{Left: left, Operator: v.Operator, Right: right}, nil
+	case *parser.CaseExpr:
+		for i, branch := range v.Branches {
+			cond, cerr := e.resolveExprSubqueries(branch.Condition, cteTables)
+			if cerr != nil {
+				return nil, cerr
+			}
+			res, rerr := e.resolveExprSubqueries(branch.Result, cteTables)
+			if rerr != nil {
+				return nil, rerr
+			}
+			v.Branches[i] = parser.CaseBranch{Condition: cond, Result: res}
+		}
+		if v.Else != nil {
+			elseExpr, eerr := e.resolveExprSubqueries(v.Else, cteTables)
+			if eerr != nil {
+				return nil, eerr
+			}
+			v.Else = elseExpr
+		}
+		return v, nil
+	default:
+		return expr, nil
+	}
 }
 
 func stripExprAliases(expr parser.Expression) parser.Expression {
