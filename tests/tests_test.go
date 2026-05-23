@@ -76,6 +76,7 @@ func TestWhere(t *testing.T)             { runTestSQL(t, "where", "test_where.sq
 func TestLike(t *testing.T)              { runTestSQL(t, "like", "test_like.sql") }
 func TestIsNull(t *testing.T)            { runTestSQL(t, "is_null", "test_is_null.sql") }
 func TestIn(t *testing.T)                { runTestSQL(t, "in", "test_in.sql") }
+func TestCount(t *testing.T)             { runTestSQL(t, "count", "test_count.sql") }
 func TestDistinct(t *testing.T)          { runTestSQL(t, "distinct", "test_distinct.sql") }
 func TestOrderBy(t *testing.T)           { runTestSQL(t, "order_by", "test_order_by.sql") }
 func TestLimit(t *testing.T)             { runTestSQL(t, "limit", "test_limit.sql") }
