@@ -38,8 +38,9 @@ WITH (
   storage = 'local',
   format = 'csv',
   location = 'samples/orders',
-  file_pattern = '*.csv'
-);
+  file_pattern = 'data.csv'
+)
+PARTITIONED BY (year, month);
 
 CREATE TABLE partitioned_orders (
   order_id INT,

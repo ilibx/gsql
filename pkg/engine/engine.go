@@ -148,6 +148,22 @@ func (e *Engine) executeSelectWithCTEs(query *parser.SelectQuery, cteTables map[
 		return nil, err
 	}
 
+	// apply column aliases to row keys
+	if len(query.ColumnAliases) > 0 {
+		origToAlias := make(map[string]string)
+		for alias, orig := range query.ColumnAliases {
+			origToAlias[stripTableAlias(orig)] = alias
+		}
+		for _, row := range rows {
+			for orig, alias := range origToAlias {
+				if val, exists := row[orig]; exists {
+					row[alias] = val
+					delete(row, orig)
+				}
+			}
+		}
+	}
+
 	// UNION [ALL]
 	if query.UnionQuery != nil {
 		rightRows, err := e.executeSelectWithCTEs(query.UnionQuery, cteTables)
@@ -167,6 +183,9 @@ func (e *Engine) buildLogicalPlan(sel *parser.SelectQuery, cteTables map[string]
 	root := e.buildBaseRelation(sel, cteTables)
 	root = e.addJoins(root, sel, cteTables)
 	root = e.addFiltersAndGrouping(root, sel)
+	if err := e.validateGroupByColumns(sel); err != nil {
+		return nil, err
+	}
 	root = e.addWindowFunctions(root, sel)
 	root = e.addSortAndLimit(root, sel)
 	root = e.addProjection(root, sel)
@@ -228,23 +247,33 @@ func (e *Engine) addFiltersAndGrouping(root plan.LogicalNode, sel *parser.Select
 	return root
 }
 
-func (e *Engine) addWindowFunctions(root plan.LogicalNode, sel *parser.SelectQuery) plan.LogicalNode {
-	hasWindow := false
-	for _, w := range sel.WindowExprs {
-		if w.FuncName != "" {
-			hasWindow = true
-			break
+func (e *Engine) validateGroupByColumns(sel *parser.SelectQuery) error {
+	if len(sel.GroupBy) == 0 {
+		return nil
+	}
+	if len(sel.Columns) == 1 && sel.Columns[0] == "*" {
+		return nil
+	}
+	// build set of valid column names: group-by columns + aggregate expressions
+	valid := make(map[string]bool)
+	for _, gb := range sel.GroupBy {
+		valid[stripTableAlias(gb)] = true
+	}
+	for _, agg := range sel.Aggregates {
+		valid[agg.FuncName+"("+stripTableAlias(agg.Column)+")"] = true
+	}
+	for _, col := range sel.Columns {
+		stripped := stripTableAlias(col)
+		if !valid[stripped] {
+			return fmt.Errorf("column %q must appear in GROUP BY clause or be used in an aggregate function", stripped)
 		}
 	}
-	if !hasWindow {
-		return root
-	}
+	return nil
+}
 
+func (e *Engine) addWindowFunctions(root plan.LogicalNode, sel *parser.SelectQuery) plan.LogicalNode {
 	windowExprs := make([]parser.WindowExpr, len(sel.WindowExprs))
 	for i, w := range sel.WindowExprs {
-		if w.FuncName == "" {
-			continue
-		}
 		partBy := make([]string, len(w.PartitionBy))
 		for j, p := range w.PartitionBy {
 			partBy[j] = stripTableAlias(p)
@@ -268,7 +297,7 @@ func (e *Engine) addSortAndLimit(root plan.LogicalNode, sel *parser.SelectQuery)
 	for i, o := range sel.OrderBy {
 		s := stripTableAlias(o.Column)
 		if alias, ok := sel.ColumnAliases[s]; ok {
-			s = alias
+			s = stripTableAlias(alias)
 		}
 		orderBy[i] = parser.SortOrder{Column: s, Desc: o.Desc}
 	}

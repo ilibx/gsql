@@ -1131,6 +1131,9 @@ func (p *Parser) parseSelectItems() ([]string, []Expression, []AggregateExpr, []
 					return nil, nil, nil, nil, nil, fmt.Errorf("inside %s(): %w", funcName, parseErr)
 				}
 				args = []string{col}
+			} else if p.cur.Type == NUMBER || p.cur.Type == STRING {
+				args = []string{p.cur.Literal}
+				p.nextToken()
 			} else if p.cur.Type == RPAREN {
 				// zero-arg function like ROW_NUMBER()
 			} else {

@@ -1020,8 +1020,8 @@ func TestEngineColumnAliasOrderBy(t *testing.T) {
 	if len(rows) != 3 {
 		t.Fatalf("expected 3 rows, got %d", len(rows))
 	}
-	if rows[0]["name"] != "alice" || rows[0]["SUM(age)"] != "25" {
-		t.Errorf("expected alice-25 first by SUM(age), got %s-%s", rows[0]["name"], rows[0]["SUM(age)"])
+	if rows[0]["name"] != "alice" || rows[0]["total"] != "25" {
+		t.Errorf("expected alice-25 first by total, got %s-%s", rows[0]["name"], rows[0]["total"])
 	}
 }
 
