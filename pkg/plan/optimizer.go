@@ -5,7 +5,7 @@ import (
 	"sort"
 
 	"github.com/ilibx/gsql/pkg/catalog"
-	"github.com/ilibx/gsql/pkg/sqlparse"
+	"github.com/ilibx/gsql/pkg/parser"
 )
 
 type OptimizeRule func(LogicalNode) LogicalNode
@@ -39,7 +39,7 @@ func MergeFilters(node LogicalNode) LogicalNode {
 	if !ok {
 		return node
 	}
-	merged := &sqlparse.LogicalExpr{
+	merged := &parser.LogicalExpr{
 		Left:     innerFilter.Predicate,
 		Operator: "AND",
 		Right:    filter.Predicate,
@@ -223,26 +223,26 @@ func collectColumnRefs(node LogicalNode, cols map[string]bool) {
 	}
 }
 
-func collectExprCols(expr sqlparse.Expression, cols map[string]bool) {
+func collectExprCols(expr parser.Expression, cols map[string]bool) {
 	if expr == nil {
 		return
 	}
 	switch v := expr.(type) {
-	case *sqlparse.ComparisonExpr:
+	case *parser.ComparisonExpr:
 		cols[v.Column] = true
-	case *sqlparse.LogicalExpr:
+	case *parser.LogicalExpr:
 		collectExprCols(v.Left, cols)
 		collectExprCols(v.Right, cols)
-	case *sqlparse.NullTestExpr:
+	case *parser.NullTestExpr:
 		cols[v.Column] = true
-	case *sqlparse.InExpr:
+	case *parser.InExpr:
 		cols[v.Column] = true
-	case *sqlparse.BinaryExpr:
+	case *parser.BinaryExpr:
 		collectExprCols(v.Left, cols)
 		collectExprCols(v.Right, cols)
-	case *sqlparse.ColumnRef:
+	case *parser.ColumnRef:
 		cols[v.Name] = true
-	case *sqlparse.CaseExpr:
+	case *parser.CaseExpr:
 		for _, b := range v.Branches {
 			collectExprCols(b.Condition, cols)
 			collectExprCols(b.Result, cols)

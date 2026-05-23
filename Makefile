@@ -1,5 +1,5 @@
 BIN := bin/gsql
-SQL_FILE ?= samples/query_check.sql
+SQL_FILE ?= tests/check.sql
 OUT_FILE := $(shell mktemp -t gsql_query_out.XXXXXX)
 
 .PHONY: all build run-sql check-sql test clean
@@ -12,13 +12,13 @@ build:
 
 run-sql: build
 	@echo "Running SQL from $(SQL_FILE)"
-	@$(BIN) $(SQL_FILE)
+	@$(BIN) -s $(SQL_FILE)
 
 check-sql: build
 	@echo "Running SQL from $(SQL_FILE) and checking output"
 	@mkdir -p bin
-	@$(BIN) $(SQL_FILE) | grep -E '^(id, name|[0-9]+, )' > $(OUT_FILE)
-	@diff -u samples/query_check.expected $(OUT_FILE)
+	@$(BIN) -s $(SQL_FILE) | grep -E '^(id, name|[0-9]+, )' > $(OUT_FILE)
+	@diff -u tests/check.expected $(OUT_FILE)
 	@echo "SQL execution result matches expected output."
 
 test:

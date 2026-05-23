@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"time"
@@ -16,37 +17,51 @@ import (
 	"github.com/ilibx/gsql/pkg/catalog"
 )
 
-// FTP/SFTP/WebDAV storage constants
+// Remote storage option keys (without type prefix)
 const (
-	ftpHostKey     = "ftp_host"
-	ftpPortKey     = "ftp_port"
-	ftpUserKey     = "ftp_user"
-	ftpPassKey     = "ftp_pass"
-	ftpPathKey     = "ftp_path"
-	sftpHostKey    = "sftp_host"
-	sftpPortKey    = "sftp_port"
-	sftpUserKey    = "sftp_user"
-	sftpPassKey    = "sftp_pass"
-	sftpPathKey    = "sftp_path"
-	webdavURLKey   = "webdav_url"
-	webdavUserKey  = "webdav_user"
-	webdavPassKey  = "webdav_pass"
-	webdavPathKey  = "webdav_path"
-	dialTimeout    = 10 * time.Second
-	remoteTimeout  = 30 * time.Second
+	urlKey  = "url"
+	userKey = "user"
+	passKey = "pass"
+	pathKey = "path"
 )
+
+const (
+	dialTimeout   = 10 * time.Second
+	remoteTimeout = 30 * time.Second
+)
+
+// parseRemoteURL extracts host, port, and path from a URL like ftp://host:port/path or sftp://host/path.
+func parseRemoteURL(rawURL string, defaultPort string) (host, port, path string, err error) {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return "", "", "", fmt.Errorf("invalid URL %q: %w", rawURL, err)
+	}
+	host = u.Hostname()
+	if host == "" {
+		return "", "", "", fmt.Errorf("missing host in URL %q", rawURL)
+	}
+	port = u.Port()
+	if port == "" {
+		port = defaultPort
+	}
+	path = strings.TrimPrefix(u.Path, "/")
+	return host, port, path, nil
+}
 
 // readFTPTable reads data from FTP
 func readFTPTable(tbl *catalog.Table, filters []PartitionFilter) ([]Row, error) {
-	host := tbl.Option(ftpHostKey, "")
-	if host == "" {
-		return nil, fmt.Errorf("missing ftp_host for table %s", tbl.Name)
+	rawURL := tbl.Option(urlKey, "")
+	if rawURL == "" {
+		return nil, fmt.Errorf("missing url for table %s", tbl.Name)
 	}
 
-	port := tbl.Option(ftpPortKey, "21")
-	user := tbl.Option(ftpUserKey, "")
-	pass := tbl.Option(ftpPassKey, "")
-	path := tbl.Option(ftpPathKey, "")
+	host, port, path, err := parseRemoteURL(rawURL, "21")
+	if err != nil {
+		return nil, err
+	}
+
+	user := tbl.Option(userKey, "")
+	pass := tbl.Option(passKey, "")
 	pattern := tbl.Option("file_pattern", "*")
 	format := strings.ToLower(tbl.Option("format", ""))
 
@@ -82,8 +97,6 @@ func readFTPTable(tbl *catalog.Table, filters []PartitionFilter) ([]Row, error) 
 
 	var fileNames []string
 	for _, entry := range entries {
-		// entry.Type: 0 = file, 1 = directory, 2 = symlink
-		// Only process files (type 0)
 		if entry.Type != ftp.EntryTypeFile {
 			continue
 		}
@@ -166,15 +179,18 @@ func readFTPTable(tbl *catalog.Table, filters []PartitionFilter) ([]Row, error) 
 
 // readSFTPTable reads data from SFTP
 func readSFTPTable(tbl *catalog.Table, filters []PartitionFilter) ([]Row, error) {
-	host := tbl.Option(sftpHostKey, "")
-	if host == "" {
-		return nil, fmt.Errorf("missing sftp_host for table %s", tbl.Name)
+	rawURL := tbl.Option(urlKey, "")
+	if rawURL == "" {
+		return nil, fmt.Errorf("missing url for table %s", tbl.Name)
 	}
 
-	port := tbl.Option(sftpPortKey, "22")
-	user := tbl.Option(sftpUserKey, "")
-	pass := tbl.Option(sftpPassKey, "")
-	path := tbl.Option(sftpPathKey, "")
+	host, port, path, err := parseRemoteURL(rawURL, "22")
+	if err != nil {
+		return nil, err
+	}
+
+	user := tbl.Option(userKey, "")
+	pass := tbl.Option(passKey, "")
 	pattern := tbl.Option("file_pattern", "*")
 	format := strings.ToLower(tbl.Option("format", ""))
 
@@ -288,14 +304,14 @@ func readSFTPTable(tbl *catalog.Table, filters []PartitionFilter) ([]Row, error)
 
 // readWebDAVTable reads data from WebDAV
 func readWebDAVTable(tbl *catalog.Table, filters []PartitionFilter) ([]Row, error) {
-	url := tbl.Option(webdavURLKey, "")
-	if url == "" {
-		return nil, fmt.Errorf("missing webdav_url for table %s", tbl.Name)
+	rawURL := tbl.Option(urlKey, "")
+	if rawURL == "" {
+		return nil, fmt.Errorf("missing url for table %s", tbl.Name)
 	}
 
-	user := tbl.Option(webdavUserKey, "")
-	pass := tbl.Option(webdavPassKey, "")
-	path := tbl.Option(webdavPathKey, "")
+	user := tbl.Option(userKey, "")
+	pass := tbl.Option(passKey, "")
+	path := tbl.Option(pathKey, "")
 	pattern := tbl.Option("file_pattern", "*")
 	format := strings.ToLower(tbl.Option("format", ""))
 
@@ -303,9 +319,8 @@ func readWebDAVTable(tbl *catalog.Table, filters []PartitionFilter) ([]Row, erro
 		return nil, fmt.Errorf("missing format for table %s", tbl.Name)
 	}
 
-	client := gowebdav.NewClient(url, user, pass)
+	client := gowebdav.NewClient(rawURL, user, pass)
 
-	// List files
 	entries, err := client.ReadDir(path)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list WebDAV directory %s: %w", path, err)
@@ -368,15 +383,18 @@ func readWebDAVTable(tbl *catalog.Table, filters []PartitionFilter) ([]Row, erro
 
 // writeFTPTable writes data to FTP
 func writeFTPTable(tbl *catalog.Table, rows []Row, appendMode bool) error {
-	host := tbl.Option(ftpHostKey, "")
-	if host == "" {
-		return fmt.Errorf("missing ftp_host for table %s", tbl.Name)
+	rawURL := tbl.Option(urlKey, "")
+	if rawURL == "" {
+		return fmt.Errorf("missing url for table %s", tbl.Name)
 	}
 
-	port := tbl.Option(ftpPortKey, "21")
-	user := tbl.Option(ftpUserKey, "")
-	pass := tbl.Option(ftpPassKey, "")
-	path := tbl.Option(ftpPathKey, "")
+	host, port, path, err := parseRemoteURL(rawURL, "21")
+	if err != nil {
+		return err
+	}
+
+	user := tbl.Option(userKey, "")
+	pass := tbl.Option(passKey, "")
 	fileName := tbl.Option("file_name", "result.csv")
 	format := strings.ToLower(tbl.Option("format", "csv"))
 
@@ -403,9 +421,8 @@ func writeFTPTable(tbl *catalog.Table, rows []Row, appendMode bool) error {
 		return fmt.Errorf("unsupported write format %q", format)
 	}
 
-	// Connect to FTP
 	addr := fmt.Sprintf("%s:%s", host, port)
-	conn, err := ftp.Dial(addr)
+	conn, err := ftp.DialTimeout(addr, dialTimeout)
 	if err != nil {
 		return fmt.Errorf("failed to connect to FTP %s: %w", addr, err)
 	}
@@ -423,7 +440,6 @@ func writeFTPTable(tbl *catalog.Table, rows []Row, appendMode bool) error {
 		}
 	}
 
-	// Upload file
 	if err := conn.Stor(fileName, bytes.NewReader(data)); err != nil {
 		return fmt.Errorf("failed to store file %s on FTP: %w", fileName, err)
 	}
@@ -433,15 +449,18 @@ func writeFTPTable(tbl *catalog.Table, rows []Row, appendMode bool) error {
 
 // writeSFTPTable writes data to SFTP
 func writeSFTPTable(tbl *catalog.Table, rows []Row, appendMode bool) error {
-	host := tbl.Option(sftpHostKey, "")
-	if host == "" {
-		return fmt.Errorf("missing sftp_host for table %s", tbl.Name)
+	rawURL := tbl.Option(urlKey, "")
+	if rawURL == "" {
+		return fmt.Errorf("missing url for table %s", tbl.Name)
 	}
 
-	port := tbl.Option(sftpPortKey, "22")
-	user := tbl.Option(sftpUserKey, "")
-	pass := tbl.Option(sftpPassKey, "")
-	path := tbl.Option(sftpPathKey, "")
+	host, port, path, err := parseRemoteURL(rawURL, "22")
+	if err != nil {
+		return err
+	}
+
+	user := tbl.Option(userKey, "")
+	pass := tbl.Option(passKey, "")
 	fileName := tbl.Option("file_name", "result.csv")
 	format := strings.ToLower(tbl.Option("format", "csv"))
 
@@ -449,7 +468,6 @@ func writeSFTPTable(tbl *catalog.Table, rows []Row, appendMode bool) error {
 		fileName = fmt.Sprintf("append_%d_%s", len(rows), fileName)
 	}
 
-	// Generate data
 	var data []byte
 	switch format {
 	case "csv":
@@ -468,13 +486,11 @@ func writeSFTPTable(tbl *catalog.Table, rows []Row, appendMode bool) error {
 		return fmt.Errorf("unsupported write format %q", format)
 	}
 
-	// Create SSH client config
 	config := &ssh.ClientConfig{
-		User: user,
-		Auth: []ssh.AuthMethod{
-			ssh.Password(pass),
-		},
+		User:            user,
+		Auth:            []ssh.AuthMethod{ssh.Password(pass)},
 		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+		Timeout:         dialTimeout,
 	}
 
 	addr := fmt.Sprintf("%s:%s", host, port)
@@ -506,14 +522,14 @@ func writeSFTPTable(tbl *catalog.Table, rows []Row, appendMode bool) error {
 
 // writeWebDAVTable writes data to WebDAV
 func writeWebDAVTable(tbl *catalog.Table, rows []Row, appendMode bool) error {
-	url := tbl.Option(webdavURLKey, "")
-	if url == "" {
-		return fmt.Errorf("missing webdav_url for table %s", tbl.Name)
+	rawURL := tbl.Option(urlKey, "")
+	if rawURL == "" {
+		return fmt.Errorf("missing url for table %s", tbl.Name)
 	}
 
-	user := tbl.Option(webdavUserKey, "")
-	pass := tbl.Option(webdavPassKey, "")
-	path := tbl.Option(webdavPathKey, "")
+	user := tbl.Option(userKey, "")
+	pass := tbl.Option(passKey, "")
+	path := tbl.Option(pathKey, "")
 	fileName := tbl.Option("file_name", "result.csv")
 	format := strings.ToLower(tbl.Option("format", "csv"))
 
@@ -521,7 +537,6 @@ func writeWebDAVTable(tbl *catalog.Table, rows []Row, appendMode bool) error {
 		fileName = fmt.Sprintf("append_%d_%s", len(rows), fileName)
 	}
 
-	// Generate data
 	var data []byte
 	switch format {
 	case "csv":
@@ -540,7 +555,7 @@ func writeWebDAVTable(tbl *catalog.Table, rows []Row, appendMode bool) error {
 		return fmt.Errorf("unsupported write format %q", format)
 	}
 
-	client := gowebdav.NewClient(url, user, pass)
+	client := gowebdav.NewClient(rawURL, user, pass)
 	filePath := filepath.Join(path, fileName)
 
 	if err := client.Write(filePath, data, 0644); err != nil {

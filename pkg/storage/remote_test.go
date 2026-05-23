@@ -18,11 +18,9 @@ func TestFTPStorageTypeDetection(t *testing.T) {
 		},
 		WithOptions: map[string]string{
 			"storage":      "ftp",
-			"ftp_host":     "ftp.example.com",
-			"ftp_port":     "21",
-			"ftp_user":     "testuser",
-			"ftp_pass":     "testpass",
-			"ftp_path":     "/data",
+			"url":          "ftp://ftp.example.com:21/data",
+			"user":         "testuser",
+			"pass":         "testpass",
 			"format":       "csv",
 			"file_pattern": "*.csv",
 		},
@@ -33,8 +31,8 @@ func TestFTPStorageTypeDetection(t *testing.T) {
 		t.Errorf("expected storage type 'ftp', got %q", storageType)
 	}
 
-	if host := tbl.Option("ftp_host", ""); host != "ftp.example.com" {
-		t.Errorf("expected ftp_host 'ftp.example.com', got %q", host)
+	if u := tbl.Option("url", ""); u != "ftp://ftp.example.com:21/data" {
+		t.Errorf("expected url 'ftp://ftp.example.com:21/data', got %q", u)
 	}
 }
 
@@ -46,11 +44,9 @@ func TestSFTPStorageTypeDetection(t *testing.T) {
 		},
 		WithOptions: map[string]string{
 			"storage":      "sftp",
-			"sftp_host":    "sftp.example.com",
-			"sftp_port":    "22",
-			"sftp_user":    "sftpuser",
-			"sftp_pass":    "sftppass",
-			"sftp_path":    "/home/user/data",
+			"url":          "sftp://sftp.example.com:22/home/user/data",
+			"user":         "sftpuser",
+			"pass":         "sftppass",
 			"format":       "csv",
 			"file_pattern": "*.csv",
 		},
@@ -61,11 +57,8 @@ func TestSFTPStorageTypeDetection(t *testing.T) {
 		t.Errorf("expected storage type 'sftp', got %q", storageType)
 	}
 
-	if host := tbl.Option("sftp_host", ""); host != "sftp.example.com" {
-		t.Errorf("expected sftp_host 'sftp.example.com', got %q", host)
-	}
-	if port := tbl.Option("sftp_port", "22"); port != "22" {
-		t.Errorf("expected sftp_port '22', got %q", port)
+	if u := tbl.Option("url", ""); u != "sftp://sftp.example.com:22/home/user/data" {
+		t.Errorf("expected url 'sftp://sftp.example.com:22/home/user/data', got %q", u)
 	}
 }
 
@@ -77,10 +70,10 @@ func TestWebDAVStorageTypeDetection(t *testing.T) {
 		},
 		WithOptions: map[string]string{
 			"storage":       "webdav",
-			"webdav_url":    "http://webdav.example.com",
-			"webdav_user":   "webdavuser",
-			"webdav_pass":   "webdavpass",
-			"webdav_path":   "/public/data",
+			"url":           "http://webdav.example.com",
+			"user":          "webdavuser",
+			"pass":          "webdavpass",
+			"path":          "/public/data",
 			"format":        "csv",
 			"file_pattern":  "*.csv",
 		},
@@ -91,38 +84,29 @@ func TestWebDAVStorageTypeDetection(t *testing.T) {
 		t.Errorf("expected storage type 'webdav', got %q", storageType)
 	}
 
-	if url := tbl.Option("webdav_url", ""); url != "http://webdav.example.com" {
-		t.Errorf("expected webdav_url 'http://webdav.example.com', got %q", url)
+	if u := tbl.Option("url", ""); u != "http://webdav.example.com" {
+		t.Errorf("expected url 'http://webdav.example.com', got %q", u)
 	}
 }
 
 func TestRemoteStorageFileNameGeneration(t *testing.T) {
 	testCases := []struct {
-		name      string
-		storage   string
-		optionKey string
+		name    string
+		storage string
+		url     string
 	}{
-		{"FTP", "ftp", "ftp_path"},
-		{"SFTP", "sftp", "sftp_path"},
-		{"WebDAV", "webdav", "webdav_path"},
+		{"FTP", "ftp", "ftp://example.com/data"},
+		{"SFTP", "sftp", "sftp://example.com/data"},
+		{"WebDAV", "webdav", "http://example.com"},
 	}
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			opts := map[string]string{
-				"storage":      tc.storage,
-				"format":       "csv",
-				"file_name":    "result.csv",
-				tc.optionKey:   "/data",
-			}
-
-			// Set appropriate credential keys
-			if tc.storage == "ftp" {
-				opts["ftp_host"] = "example.com"
-			} else if tc.storage == "sftp" {
-				opts["sftp_host"] = "example.com"
-			} else if tc.storage == "webdav" {
-				opts["webdav_url"] = "http://example.com"
+				"storage":   tc.storage,
+				"format":    "csv",
+				"file_name": "result.csv",
+				"url":       tc.url,
 			}
 
 			tbl := &catalog.Table{

@@ -1,4 +1,4 @@
-package sqlparse
+package parser
 
 type Statement interface {
 	StatementName() string

@@ -1,0 +1,1 @@
+SELECT DISTINCT city FROM users ORDER BY city;

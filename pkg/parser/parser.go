@@ -1,4 +1,4 @@
-package sqlparse
+package parser
 
 import (
 	"fmt"
@@ -423,7 +423,14 @@ func (l *lexer) readString(quote rune) string {
 	l.readChar()
 	position := l.position
 	for l.ch != 0 && l.ch != quote {
-		l.readChar()
+		if l.ch == '\\' {
+			l.readChar()
+			if l.ch != 0 {
+				l.readChar()
+			}
+		} else {
+			l.readChar()
+		}
 	}
 	return l.input[position:l.position]
 }
@@ -809,10 +816,11 @@ func (p *Parser) parseCTEList() ([]CTE, error) {
 	if p.cur.Type != WITH {
 		return nil, nil
 	}
+	p.nextToken() // consume WITH
 	var ctes []CTE
 	for {
-		if err := p.expectPeek(IDENT); err != nil {
-			return nil, err
+		if p.cur.Type != IDENT {
+			return nil, fmt.Errorf("expected CTE name, got %s", tokenName(p.cur.Type))
 		}
 		cteName := p.cur.Literal
 		if err := p.expectPeek(AS); err != nil {
@@ -1051,6 +1059,7 @@ func (p *Parser) parseInExpr(col string, not bool) (Expression, error) {
 			p.nextToken()
 			continue
 		}
+		p.nextToken()
 		break
 	}
 	if p.cur.Type != RPAREN {
@@ -1208,6 +1217,10 @@ func (p *Parser) parseSelectItems() ([]string, []Expression, []AggregateExpr, []
 				}
 			}
 		}
+		if p.curIs(COMMA) {
+			p.nextToken()
+			continue
+		}
 		if p.peekIs(COMMA) {
 			p.nextToken()
 			p.nextToken()
@@ -1264,6 +1277,23 @@ func (p *Parser) parseWindowSpec(funcName string, args []string) (*WindowExpr, e
 	}, nil
 }
 
+const (
+	precLowest = iota
+	precTerm
+	precFactor
+)
+
+func arithmeticPrecedence(tokType TokenType) int {
+	switch tokType {
+	case PLUS, MINUS:
+		return precTerm
+	case ASTERISK, DIV:
+		return precFactor
+	default:
+		return precLowest
+	}
+}
+
 func isArithmeticOp(tok Token) bool {
 	return tok.Type == PLUS || tok.Type == MINUS || tok.Type == ASTERISK || tok.Type == DIV
 }
@@ -1276,12 +1306,26 @@ func (p *Parser) parseArithmeticExpr(left Expression) (Expression, error) {
 			return nil, err
 		}
 	}
+	return p.parseArithmeticBinary(left, precLowest)
+}
+
+func (p *Parser) parseArithmeticBinary(left Expression, minPrec int) (Expression, error) {
 	for isArithmeticOp(p.cur) {
+		opPrec := arithmeticPrecedence(p.cur.Type)
+		if opPrec < minPrec {
+			return left, nil
+		}
 		op := p.cur.Literal
 		p.nextToken()
 		right, err := p.parseArithmeticPrimary()
 		if err != nil {
 			return nil, err
+		}
+		for isArithmeticOp(p.cur) && arithmeticPrecedence(p.cur.Type) > opPrec {
+			right, err = p.parseArithmeticBinary(right, arithmeticPrecedence(p.cur.Type))
+			if err != nil {
+				return nil, err
+			}
 		}
 		left = &BinaryExpr{Left: left, Operator: op, Right: right}
 	}
@@ -1401,8 +1445,7 @@ func (p *Parser) parseOrderByList() ([]SortOrder, error) {
 			p.nextToken()
 		}
 		items = append(items, SortOrder{Column: col, Desc: desc})
-		if p.peekIs(COMMA) {
-			p.nextToken()
+		if p.cur.Type == COMMA {
 			p.nextToken()
 			continue
 		}

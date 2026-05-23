@@ -8,7 +8,7 @@ import (
 	"strings"
 
 	"github.com/ilibx/gsql/pkg/catalog"
-	"github.com/ilibx/gsql/pkg/sqlparse"
+	"github.com/ilibx/gsql/pkg/parser"
 	"github.com/ilibx/gsql/pkg/storage"
 )
 
@@ -66,10 +66,10 @@ func (n *TableScanNode) Explain(indent int) string {
 
 type FilterNode struct {
 	Child     PlanNode
-	Predicate sqlparse.Expression
+	Predicate parser.Expression
 }
 
-func NewFilterNode(child PlanNode, predicate sqlparse.Expression) *FilterNode {
+func NewFilterNode(child PlanNode, predicate parser.Expression) *FilterNode {
 	return &FilterNode{Child: child, Predicate: predicate}
 }
 
@@ -93,14 +93,14 @@ func (n *FilterNode) Explain(indent int) string {
 type ProjectNode struct {
 	Child     PlanNode
 	Columns   []string
-	Exprs     []sqlparse.Expression // parallel to Columns, nil means plain column ref
+	Exprs     []parser.Expression // parallel to Columns, nil means plain column ref
 }
 
 func NewProjectNode(child PlanNode, columns []string) *ProjectNode {
 	return &ProjectNode{Child: child, Columns: columns}
 }
 
-func NewProjectNodeWithExprs(child PlanNode, columns []string, exprs []sqlparse.Expression) *ProjectNode {
+func NewProjectNodeWithExprs(child PlanNode, columns []string, exprs []parser.Expression) *ProjectNode {
 	return &ProjectNode{Child: child, Columns: columns, Exprs: exprs}
 }
 
@@ -122,7 +122,7 @@ func (n *ProjectNode) Execute() ([]storage.Row, error) {
 	return projectRowsParallel(rows, n.Columns), nil
 }
 
-func projectRowsWithExprs(rows []storage.Row, columns []string, exprs []sqlparse.Expression) []storage.Row {
+func projectRowsWithExprs(rows []storage.Row, columns []string, exprs []parser.Expression) []storage.Row {
 	result := make([]storage.Row, 0, len(rows))
 	for _, row := range rows {
 		projectedRow := make(storage.Row)
@@ -145,10 +145,10 @@ func (n *ProjectNode) Explain(indent int) string {
 
 type WindowNode struct {
 	Child       PlanNode
-	WindowExprs []sqlparse.WindowExpr
+	WindowExprs []parser.WindowExpr
 }
 
-func NewWindowNode(child PlanNode, windowExprs []sqlparse.WindowExpr) *WindowNode {
+func NewWindowNode(child PlanNode, windowExprs []parser.WindowExpr) *WindowNode {
 	return &WindowNode{Child: child, WindowExprs: windowExprs}
 }
 
@@ -196,10 +196,10 @@ func (n *WindowNode) Explain(indent int) string {
 
 type SortNode struct {
 	Child   PlanNode
-	OrderBy []sqlparse.SortOrder
+	OrderBy []parser.SortOrder
 }
 
-func NewSortNode(child PlanNode, orderBy []sqlparse.SortOrder) *SortNode {
+func NewSortNode(child PlanNode, orderBy []parser.SortOrder) *SortNode {
 	return &SortNode{Child: child, OrderBy: orderBy}
 }
 
@@ -367,18 +367,34 @@ func computeAggregate(rows []storage.Row, funcName, column string) string {
 		return strconv.FormatFloat(total/float64(count), 'f', -1, 64)
 	case "MIN":
 		var min string
-		for i, row := range rows {
-			if i == 0 || row[column] < min {
-				min = row[column]
+		set := false
+		for _, row := range rows {
+			if row[column] == "" {
+				continue
 			}
+			if !set || compareValues(row[column], min, "<") {
+				min = row[column]
+				set = true
+			}
+		}
+		if !set && len(rows) > 0 {
+			min = rows[0][column]
 		}
 		return min
 	case "MAX":
 		var max string
-		for i, row := range rows {
-			if i == 0 || row[column] > max {
-				max = row[column]
+		set := false
+		for _, row := range rows {
+			if row[column] == "" {
+				continue
 			}
+			if !set || compareValues(row[column], max, ">") {
+				max = row[column]
+				set = true
+			}
+		}
+		if !set && len(rows) > 0 {
+			max = rows[0][column]
 		}
 		return max
 	default:
@@ -463,7 +479,7 @@ func cloneRows(rows []storage.Row) []storage.Row {
 	return cloned
 }
 
-func filterRowsParallel(rows []storage.Row, expr sqlparse.Expression) []storage.Row {
+func filterRowsParallel(rows []storage.Row, expr parser.Expression) []storage.Row {
 	if len(rows) == 0 || expr == nil {
 		return rows
 	}
@@ -486,6 +502,11 @@ func filterRowsParallel(rows []storage.Row, expr sqlparse.Expression) []storage.
 			end = len(rows)
 		}
 		go func(idx int, slice []storage.Row) {
+			defer func() {
+				if r := recover(); r != nil {
+					resultCh <- segmentResult{index: idx, rows: nil}
+				}
+			}()
 			filtered := make([]storage.Row, 0, len(slice))
 			for _, row := range slice {
 				if evaluateExpression(row, expr) {
@@ -558,7 +579,7 @@ func projectRowsParallel(rows []storage.Row, columns []string) []storage.Row {
 	return result
 }
 
-func sortRows(rows []storage.Row, orderBy []sqlparse.SortOrder) {
+func sortRows(rows []storage.Row, orderBy []parser.SortOrder) {
 	sort.SliceStable(rows, func(i, j int) bool {
 		for _, o := range orderBy {
 			vi, vj := rows[i][o.Column], rows[j][o.Column]
@@ -573,9 +594,9 @@ func sortRows(rows []storage.Row, orderBy []sqlparse.SortOrder) {
 	})
 }
 
-func evaluateExpression(row storage.Row, expr sqlparse.Expression) bool {
+func evaluateExpression(row storage.Row, expr parser.Expression) bool {
 	switch v := expr.(type) {
-	case *sqlparse.ComparisonExpr:
+	case *parser.ComparisonExpr:
 		left := row[v.Column]
 		right := v.Value
 		switch v.Operator {
@@ -590,7 +611,7 @@ func evaluateExpression(row storage.Row, expr sqlparse.Expression) bool {
 		default:
 			return false
 		}
-	case *sqlparse.LogicalExpr:
+	case *parser.LogicalExpr:
 		left := evaluateExpression(row, v.Left)
 		right := evaluateExpression(row, v.Right)
 		switch strings.ToUpper(v.Operator) {
@@ -601,19 +622,19 @@ func evaluateExpression(row storage.Row, expr sqlparse.Expression) bool {
 		default:
 			return false
 		}
-	case *sqlparse.NullTestExpr:
+	case *parser.NullTestExpr:
 		val := row[v.Column]
 		if v.IsNull {
 			return val == ""
 		}
 		return val != ""
-	case *sqlparse.InExpr:
+	case *parser.InExpr:
 		val := row[v.Column]
 		if v.Not {
 			return !stringInSlice(val, v.Values)
 		}
 		return stringInSlice(val, v.Values)
-	case *sqlparse.BinaryExpr:
+	case *parser.BinaryExpr:
 		left := evaluateExpressionValue(row, v.Left)
 		right := evaluateExpressionValue(row, v.Right)
 		leftNum, lErr := strconv.ParseFloat(left, 64)
@@ -639,16 +660,16 @@ func evaluateExpression(row storage.Row, expr sqlparse.Expression) bool {
 	}
 }
 
-func evaluateExpressionValue(row storage.Row, expr sqlparse.Expression) string {
+func evaluateExpressionValue(row storage.Row, expr parser.Expression) string {
 	switch v := expr.(type) {
-	case *sqlparse.ColumnRef:
+	case *parser.ColumnRef:
 		return row[v.Name]
-	case *sqlparse.ComparisonExpr:
+	case *parser.ComparisonExpr:
 		if v.Column == "" {
 			return v.Value
 		}
 		return row[v.Column]
-	case *sqlparse.NullTestExpr:
+	case *parser.NullTestExpr:
 		val := row[v.Column]
 		if v.IsNull {
 			if val == "" {
@@ -660,7 +681,7 @@ func evaluateExpressionValue(row storage.Row, expr sqlparse.Expression) string {
 			return "true"
 		}
 		return "false"
-	case *sqlparse.InExpr:
+	case *parser.InExpr:
 		val := row[v.Column]
 		in := stringInSlice(val, v.Values)
 		if v.Not {
@@ -670,7 +691,7 @@ func evaluateExpressionValue(row storage.Row, expr sqlparse.Expression) string {
 			return "true"
 		}
 		return "false"
-	case *sqlparse.BinaryExpr:
+	case *parser.BinaryExpr:
 		left := evaluateExpressionValue(row, v.Left)
 		right := evaluateExpressionValue(row, v.Right)
 		leftNum, lErr := strconv.ParseFloat(left, 64)
@@ -691,7 +712,7 @@ func evaluateExpressionValue(row storage.Row, expr sqlparse.Expression) string {
 			}
 		}
 		return ""
-	case *sqlparse.LogicalExpr:
+	case *parser.LogicalExpr:
 		left := evaluateExpression(row, v.Left)
 		right := evaluateExpression(row, v.Right)
 		switch strings.ToUpper(v.Operator) {
@@ -708,7 +729,7 @@ func evaluateExpressionValue(row storage.Row, expr sqlparse.Expression) string {
 		default:
 			return "false"
 		}
-	case *sqlparse.CaseExpr:
+	case *parser.CaseExpr:
 		for _, branch := range v.Branches {
 			if evaluateExpression(row, branch.Condition) {
 				return evaluateExpressionValue(row, branch.Result)
@@ -791,10 +812,10 @@ type PhysicalPlanContext struct {
 }
 
 // extractPartitionFilters walks an expression tree and extracts equality
-// comparisons on partition columns. Returns the remaining predicate (with
-// those comparisons removed) and the extracted partition filters.
-// Handles simple equality and AND-conjoined equalities.
-func extractPartitionFilters(expr sqlparse.Expression, partitionCols []string) (sqlparse.Expression, []storage.PartitionFilter) {
+// and range comparisons on partition columns. Returns the remaining predicate
+// (with those comparisons removed) and the extracted partition filters.
+// Handles "=", ">", "<", ">=", "<=" and AND-conjoined conditions.
+func extractPartitionFilters(expr parser.Expression, partitionCols []string) (parser.Expression, []storage.PartitionFilter) {
 	if expr == nil || len(partitionCols) == 0 {
 		return expr, nil
 	}
@@ -810,22 +831,21 @@ func extractPartitionFilters(expr sqlparse.Expression, partitionCols []string) (
 
 	var filters []storage.PartitionFilter
 
-	// rebuildExpr removes partition equalities from the expression tree.
-	var rebuildExpr func(sqlparse.Expression) sqlparse.Expression
-	rebuildExpr = func(e sqlparse.Expression) sqlparse.Expression {
+	var rebuildExpr func(parser.Expression) parser.Expression
+	rebuildExpr = func(e parser.Expression) parser.Expression {
 		if e == nil {
 			return nil
 		}
 		switch v := e.(type) {
-		case *sqlparse.ComparisonExpr:
-			if v.Operator == "=" && isPartition(v.Column) {
-				filters = append(filters, storage.PartitionFilter{Column: v.Column, Value: v.Value})
-				return nil // remove this node
+		case *parser.ComparisonExpr:
+			if isPartitionOp(v.Operator) && isPartition(v.Column) {
+				filters = append(filters, storage.PartitionFilter{Column: v.Column, Operator: v.Operator, Value: v.Value})
+				return nil
 			}
 			return v
-		case *sqlparse.LogicalExpr:
+		case *parser.LogicalExpr:
 			if v.Operator != "AND" {
-				return v // can't prune through OR
+				return v
 			}
 			left := rebuildExpr(v.Left)
 			right := rebuildExpr(v.Right)
@@ -838,7 +858,7 @@ func extractPartitionFilters(expr sqlparse.Expression, partitionCols []string) (
 			if right == nil {
 				return left
 			}
-			return &sqlparse.LogicalExpr{Left: left, Operator: "AND", Right: right}
+			return &parser.LogicalExpr{Left: left, Operator: "AND", Right: right}
 		default:
 			return v
 		}
@@ -846,6 +866,15 @@ func extractPartitionFilters(expr sqlparse.Expression, partitionCols []string) (
 
 	remaining := rebuildExpr(expr)
 	return remaining, filters
+}
+
+func isPartitionOp(op string) bool {
+	switch op {
+	case "=", ">", "<", ">=", "<=":
+		return true
+	default:
+		return false
+	}
 }
 
 func LogicalToPhysical(node LogicalNode, ctx *PhysicalPlanContext) (PlanNode, error) {
@@ -927,33 +956,33 @@ func LogicalToPhysical(node LogicalNode, ctx *PhysicalPlanContext) (PlanNode, er
 	}
 }
 
-func expressionToString(expr sqlparse.Expression) string {
+func expressionToString(expr parser.Expression) string {
 	switch v := expr.(type) {
-	case *sqlparse.ComparisonExpr:
+	case *parser.ComparisonExpr:
 		return fmt.Sprintf("%s %s '%s'", v.Column, v.Operator, v.Value)
-	case *sqlparse.LogicalExpr:
+	case *parser.LogicalExpr:
 		return fmt.Sprintf("(%s %s %s)", expressionToString(v.Left), v.Operator, expressionToString(v.Right))
-	case *sqlparse.NullTestExpr:
+	case *parser.NullTestExpr:
 		if v.IsNull {
 			return fmt.Sprintf("%s IS NULL", v.Column)
 		}
 		return fmt.Sprintf("%s IS NOT NULL", v.Column)
-	case *sqlparse.InExpr:
+	case *parser.InExpr:
 		values := strings.Join(v.Values, ", ")
 		if v.Not {
 			return fmt.Sprintf("%s NOT IN (%s)", v.Column, values)
 		}
 		return fmt.Sprintf("%s IN (%s)", v.Column, values)
-	case *sqlparse.BinaryExpr:
+	case *parser.BinaryExpr:
 		return fmt.Sprintf("(%s %s %s)", expressionToString(v.Left), v.Operator, expressionToString(v.Right))
-	case *sqlparse.ColumnRef:
+	case *parser.ColumnRef:
 		return v.Name
 	default:
 		return "unknown"
 	}
 }
 
-func computeWindowFunctions(rows []storage.Row, windowExprs []sqlparse.WindowExpr) []storage.Row {
+func computeWindowFunctions(rows []storage.Row, windowExprs []parser.WindowExpr) []storage.Row {
 	// Sort rows into partitions
 	partitions := partitionRows(rows, windowExprs)
 	// Compute window functions per partition
@@ -965,7 +994,7 @@ func computeWindowFunctions(rows []storage.Row, windowExprs []sqlparse.WindowExp
 	return result
 }
 
-func partitionRows(rows []storage.Row, windowExprs []sqlparse.WindowExpr) [][]storage.Row {
+func partitionRows(rows []storage.Row, windowExprs []parser.WindowExpr) [][]storage.Row {
 	// Collect all PARTITION BY columns from all window expressions
 	partCols := make(map[string]bool)
 	for _, w := range windowExprs {
@@ -1008,7 +1037,7 @@ func sortedMapKeys(m map[string]bool) []string {
 	return keys
 }
 
-func computePartitionWindow(rows []storage.Row, windowExprs []sqlparse.WindowExpr) []storage.Row {
+func computePartitionWindow(rows []storage.Row, windowExprs []parser.WindowExpr) []storage.Row {
 	if len(rows) == 0 {
 		return rows
 	}
@@ -1032,9 +1061,9 @@ func computePartitionWindow(rows []storage.Row, windowExprs []sqlparse.WindowExp
 				rows[i][colKey] = strconv.Itoa(i + 1)
 			}
 		case "RANK":
-			computeRank(rows, colKey, false)
+			computeRank(rows, colKey, w.OrderBy, false)
 		case "DENSE_RANK":
-			computeRank(rows, colKey, true)
+			computeRank(rows, colKey, w.OrderBy, true)
 		case "COUNT":
 			computeWindowAgg(rows, colKey, w.Args, "COUNT")
 		case "SUM":
@@ -1050,14 +1079,14 @@ func computePartitionWindow(rows []storage.Row, windowExprs []sqlparse.WindowExp
 	return rows
 }
 
-func computeRank(rows []storage.Row, colKey string, dense bool) {
+func computeRank(rows []storage.Row, colKey string, orderBy []parser.SortOrder, dense bool) {
 	if len(rows) == 0 {
 		return
 	}
 	rank := 1
 	rows[0][colKey] = "1"
 	for i := 1; i < len(rows); i++ {
-		tied := rowsEqual(rows[i], rows[i-1])
+		tied := rowsEqualByOrder(rows[i], rows[i-1], orderBy)
 		if !tied {
 			if dense {
 				rank++
@@ -1069,12 +1098,12 @@ func computeRank(rows []storage.Row, colKey string, dense bool) {
 	}
 }
 
-func rowsEqual(a, b storage.Row) bool {
-	if len(a) != len(b) {
+func rowsEqualByOrder(a, b storage.Row, orderBy []parser.SortOrder) bool {
+	if len(orderBy) == 0 {
 		return false
 	}
-	for k, v := range a {
-		if b[k] != v {
+	for _, o := range orderBy {
+		if a[o.Column] != b[o.Column] {
 			return false
 		}
 	}

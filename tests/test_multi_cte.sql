@@ -1,0 +1,1 @@
+WITH beijing AS (SELECT id, name FROM users WHERE city = 'Beijing'), shanghai AS (SELECT id, name FROM users WHERE city = 'Shanghai') SELECT name FROM beijing UNION ALL SELECT name FROM shanghai ORDER BY name;

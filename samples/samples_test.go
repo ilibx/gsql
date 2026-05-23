@@ -7,7 +7,7 @@ import (
 
 	"github.com/ilibx/gsql/pkg/catalog"
 	"github.com/ilibx/gsql/pkg/engine"
-	"github.com/ilibx/gsql/pkg/sqlparse"
+	"github.com/ilibx/gsql/pkg/parser"
 )
 
 var rootDir string
@@ -29,90 +29,25 @@ func init() {
 	}
 }
 
-func runSQLOnEngine(t *testing.T, eng *engine.Engine, relPath string) {
-	fullPath := filepath.Join(rootDir, relPath)
-	data, err := os.ReadFile(fullPath)
-	if err != nil {
-		t.Fatalf("read %s failed: %v", fullPath, err)
+func TestLoadSampleData(t *testing.T) {
+	if err := os.Chdir(rootDir); err != nil {
+		t.Fatalf("chdir to %s failed: %v", rootDir, err)
 	}
-	parser := sqlparse.NewParser()
-	stmts, err := parser.Parse(string(data))
+	cat := catalog.NewCatalog()
+	eng := engine.NewEngine(cat)
+	p := parser.NewParser()
+
+	data, err := os.ReadFile(filepath.Join(rootDir, "tests/setup.sql"))
 	if err != nil {
-		t.Fatalf("parse %s failed: %v", fullPath, err)
+		t.Fatalf("read setup.sql failed: %v", err)
+	}
+	stmts, err := p.Parse(string(data))
+	if err != nil {
+		t.Fatalf("parse setup.sql failed: %v", err)
 	}
 	for _, stmt := range stmts {
 		if err := eng.Execute(stmt); err != nil {
-			t.Fatalf("execute stmt in %s failed: %v", fullPath, err)
+			t.Fatalf("execute stmt failed: %v", err)
 		}
 	}
-}
-
-func TestSetup(t *testing.T) {
-	if err := os.Chdir(rootDir); err != nil {
-		t.Fatalf("chdir to %s failed: %v", rootDir, err)
-	}
-	runSQLOnEngine(t, engine.NewEngine(catalog.NewCatalog()), filepath.Join("samples", "setup.sql"))
-}
-
-func TestQueryBasic(t *testing.T) {
-	if err := os.Chdir(rootDir); err != nil {
-		t.Fatalf("chdir to %s failed: %v", rootDir, err)
-	}
-	cat := catalog.NewCatalog()
-	eng := engine.NewEngine(cat)
-	runSQLOnEngine(t, eng, filepath.Join("samples", "setup.sql"))
-	runSQLOnEngine(t, eng, filepath.Join("samples", "query_basic.sql"))
-}
-
-func TestQueryJoin(t *testing.T) {
-	if err := os.Chdir(rootDir); err != nil {
-		t.Fatalf("chdir to %s failed: %v", rootDir, err)
-	}
-	cat := catalog.NewCatalog()
-	eng := engine.NewEngine(cat)
-	runSQLOnEngine(t, eng, filepath.Join("samples", "setup.sql"))
-	runSQLOnEngine(t, eng, filepath.Join("samples", "query_join.sql"))
-}
-
-func TestQueryCTEAndSubquery(t *testing.T) {
-	if err := os.Chdir(rootDir); err != nil {
-		t.Fatalf("chdir to %s failed: %v", rootDir, err)
-	}
-	cat := catalog.NewCatalog()
-	eng := engine.NewEngine(cat)
-	runSQLOnEngine(t, eng, filepath.Join("samples", "setup.sql"))
-	runSQLOnEngine(t, eng, filepath.Join("samples", "query_cte_subquery.sql"))
-}
-
-func TestQueryInsertOverwrite(t *testing.T) {
-	if err := os.Chdir(rootDir); err != nil {
-		t.Fatalf("chdir to %s failed: %v", rootDir, err)
-	}
-	cat := catalog.NewCatalog()
-	eng := engine.NewEngine(cat)
-	runSQLOnEngine(t, eng, filepath.Join("samples", "setup.sql"))
-	runSQLOnEngine(t, eng, filepath.Join("samples", "query_insert.sql"))
-	if _, err := os.Stat(filepath.Join(rootDir, "samples", "result", "top_users.csv")); os.IsNotExist(err) {
-		t.Fatal("expected output file samples/result/top_users.csv")
-	}
-}
-
-func TestQueryHiveCoverage(t *testing.T) {
-	if err := os.Chdir(rootDir); err != nil {
-		t.Fatalf("chdir to %s failed: %v", rootDir, err)
-	}
-	cat := catalog.NewCatalog()
-	eng := engine.NewEngine(cat)
-	runSQLOnEngine(t, eng, filepath.Join("samples", "setup.sql"))
-	runSQLOnEngine(t, eng, filepath.Join("samples", "query_hive_coverage.sql"))
-}
-
-func TestQueryHiveSyntax(t *testing.T) {
-	if err := os.Chdir(rootDir); err != nil {
-		t.Fatalf("chdir to %s failed: %v", rootDir, err)
-	}
-	cat := catalog.NewCatalog()
-	eng := engine.NewEngine(cat)
-	runSQLOnEngine(t, eng, filepath.Join("samples", "setup.sql"))
-	runSQLOnEngine(t, eng, filepath.Join("samples", "query_hive_syntax.sql"))
 }

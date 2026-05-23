@@ -8,6 +8,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/url"
+	"path"
 	"path/filepath"
 	"strings"
 	"time"
@@ -18,40 +20,55 @@ import (
 	"github.com/ilibx/gsql/pkg/catalog"
 )
 
-// S3 storage constants
+// S3 storage option keys (without s3_ prefix)
 const (
-	s3BucketKey    = "s3_bucket"
-	s3RegionKey    = "s3_region"
-	s3EndpointKey  = "s3_endpoint"
-	s3PrefixKey    = "s3_prefix"
-	s3AccessKeyKey = "s3_access_key"
-	s3SecretKeyKey = "s3_secret_key"
-	s3Timeout      = 30 * time.Second
+	s3URLKey      = "url"
+	s3RegionKey   = "region"
+	s3EndpointKey = "endpoint"
+	s3Timeout     = 30 * time.Second
 )
+
+// parseS3URL extracts bucket and prefix from an S3 URL like s3://bucket/prefix.
+func parseS3URL(rawURL string) (bucket, prefix string, err error) {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return "", "", fmt.Errorf("invalid S3 URL %q: %w", rawURL, err)
+	}
+	if u.Scheme != "s3" {
+		return "", "", fmt.Errorf("expected s3:// URL, got %q", rawURL)
+	}
+	bucket = u.Host
+	if bucket == "" {
+		return "", "", fmt.Errorf("missing bucket in S3 URL %q", rawURL)
+	}
+	prefix = strings.TrimPrefix(u.Path, "/")
+	return bucket, prefix, nil
+}
 
 // readS3Table reads data from S3
 func readS3Table(tbl *catalog.Table, filters []PartitionFilter) ([]Row, error) {
-	bucket := tbl.Option(s3BucketKey, "")
-	if bucket == "" {
-		return nil, fmt.Errorf("missing s3_bucket for table %s", tbl.Name)
+	rawURL := tbl.Option(s3URLKey, "")
+	if rawURL == "" {
+		return nil, fmt.Errorf("missing url for table %s", tbl.Name)
 	}
 
-	// Create context with timeout for S3 operations
+	bucket, prefix, err := parseS3URL(rawURL)
+	if err != nil {
+		return nil, err
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), s3Timeout)
 	defer cancel()
 
-	// Create S3 client
 	cfg, err := config.LoadDefaultConfig(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load AWS config: %w", err)
 	}
 
-	// Override region if provided
 	if region := tbl.Option(s3RegionKey, ""); region != "" {
 		cfg.Region = region
 	}
 
-	// Override endpoint if provided (for S3-compatible services)
 	var s3Client *s3.Client
 	if endpoint := tbl.Option(s3EndpointKey, ""); endpoint != "" {
 		opts := []func(*s3.Options){
@@ -64,7 +81,6 @@ func readS3Table(tbl *catalog.Table, filters []PartitionFilter) ([]Row, error) {
 		s3Client = s3.NewFromConfig(cfg)
 	}
 
-	prefix := tbl.Option(s3PrefixKey, "")
 	pattern := tbl.Option("file_pattern", "*")
 	format := strings.ToLower(tbl.Option("format", ""))
 
@@ -72,7 +88,6 @@ func readS3Table(tbl *catalog.Table, filters []PartitionFilter) ([]Row, error) {
 		return nil, fmt.Errorf("missing format for table %s", tbl.Name)
 	}
 
-	// List objects in S3
 	var keys []string
 	paginator := s3.NewListObjectsV2Paginator(s3Client, &s3.ListObjectsV2Input{
 		Bucket: &bucket,
@@ -87,7 +102,7 @@ func readS3Table(tbl *catalog.Table, filters []PartitionFilter) ([]Row, error) {
 
 		for _, obj := range page.Contents {
 			key := *obj.Key
-			if matchPattern(filepath.Base(key), pattern) {
+			if matchPattern(path.Base(key), pattern) {
 				keys = append(keys, key)
 			}
 		}
@@ -97,7 +112,7 @@ func readS3Table(tbl *catalog.Table, filters []PartitionFilter) ([]Row, error) {
 		return nil, fmt.Errorf("no files found in S3 bucket %s with prefix %s", bucket, prefix)
 	}
 
-	// Read files in parallel
+	// Read files in parallel using streaming reads
 	type fileResult struct {
 		rows []Row
 		err  error
@@ -116,19 +131,12 @@ func readS3Table(tbl *catalog.Table, filters []PartitionFilter) ([]Row, error) {
 			}
 			defer obj.Body.Close()
 
-			// Read object body into memory
-			body, err := io.ReadAll(obj.Body)
-			if err != nil {
-				resultCh <- fileResult{err: fmt.Errorf("failed to read S3 object %s: %w", key, err)}
-				return
-			}
-
 			switch format {
 			case "csv":
-				rows, err := readCSVFromBytes(body, tbl.Columns)
+				rows, err := readCSVFromReader(obj.Body, tbl.Columns)
 				resultCh <- fileResult{rows: rows, err: err}
 			case "json":
-				rows, err := readJSONFromBytes(body, tbl.Columns)
+				rows, err := readJSONFromReader(obj.Body, tbl.Columns)
 				resultCh <- fileResult{rows: rows, err: err}
 			default:
 				resultCh <- fileResult{err: fmt.Errorf("unsupported format %q", format)}
@@ -150,22 +158,24 @@ func readS3Table(tbl *catalog.Table, filters []PartitionFilter) ([]Row, error) {
 
 // writeS3Table writes data to S3
 func writeS3Table(tbl *catalog.Table, rows []Row, appendMode bool) error {
-	bucket := tbl.Option(s3BucketKey, "")
-	if bucket == "" {
-		return fmt.Errorf("missing s3_bucket for table %s", tbl.Name)
+	rawURL := tbl.Option(s3URLKey, "")
+	if rawURL == "" {
+		return fmt.Errorf("missing url for table %s", tbl.Name)
 	}
 
-	// Create context with timeout for S3 operations
+	bucket, prefix, err := parseS3URL(rawURL)
+	if err != nil {
+		return err
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), s3Timeout)
 	defer cancel()
 
-	// Create S3 client
 	cfg, err := config.LoadDefaultConfig(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to load AWS config: %w", err)
 	}
 
-	// Override region if provided
 	if region := tbl.Option(s3RegionKey, ""); region != "" {
 		cfg.Region = region
 	}
@@ -182,16 +192,14 @@ func writeS3Table(tbl *catalog.Table, rows []Row, appendMode bool) error {
 		s3Client = s3.NewFromConfig(cfg)
 	}
 
-	prefix := tbl.Option(s3PrefixKey, "")
 	fileName := tbl.Option("file_name", "result.csv")
 	format := strings.ToLower(tbl.Option("format", "csv"))
 
-	// If append mode, generate a unique filename
 	if appendMode {
 		fileName = fmt.Sprintf("append_%d_%s", len(rows), fileName)
 	}
 
-	key := filepath.Join(prefix, fileName)
+	key := path.Join(prefix, fileName)
 
 	var data []byte
 	switch format {
@@ -211,7 +219,6 @@ func writeS3Table(tbl *catalog.Table, rows []Row, appendMode bool) error {
 		return fmt.Errorf("unsupported write format %q", format)
 	}
 
-	// Upload to S3
 	uploader := manager.NewUploader(s3Client)
 	_, err = uploader.Upload(ctx, &s3.PutObjectInput{
 		Bucket: &bucket,
@@ -232,13 +239,12 @@ func matchPattern(name, pattern string) bool {
 	if pattern == "*" || pattern == "*.*" {
 		return true
 	}
-	// Simple glob pattern matching
 	matched, err := filepath.Match(pattern, name)
 	return err == nil && matched
 }
 
-func readCSVFromBytes(data []byte, columns []catalog.ColumnDef) ([]Row, error) {
-	reader := csv.NewReader(bytes.NewReader(data))
+func readCSVFromReader(r io.Reader, columns []catalog.ColumnDef) ([]Row, error) {
+	reader := csv.NewReader(r)
 	reader.TrimLeadingSpace = true
 
 	var rows []Row
@@ -263,8 +269,8 @@ func readCSVFromBytes(data []byte, columns []catalog.ColumnDef) ([]Row, error) {
 	return rows, nil
 }
 
-func readJSONFromBytes(data []byte, columns []catalog.ColumnDef) ([]Row, error) {
-	scanner := bufio.NewScanner(bytes.NewReader(data))
+func readJSONFromReader(r io.Reader, columns []catalog.ColumnDef) ([]Row, error) {
+	scanner := bufio.NewScanner(r)
 	var rows []Row
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
@@ -289,6 +295,14 @@ func readJSONFromBytes(data []byte, columns []catalog.ColumnDef) ([]Row, error) 
 		return nil, err
 	}
 	return rows, nil
+}
+
+func readCSVFromBytes(data []byte, columns []catalog.ColumnDef) ([]Row, error) {
+	return readCSVFromReader(bytes.NewReader(data), columns)
+}
+
+func readJSONFromBytes(data []byte, columns []catalog.ColumnDef) ([]Row, error) {
+	return readJSONFromReader(bytes.NewReader(data), columns)
 }
 
 func writeCSVToBuffer(buf io.Writer, columns []catalog.ColumnDef, rows []Row) error {

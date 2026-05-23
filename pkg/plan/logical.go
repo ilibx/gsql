@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/ilibx/gsql/pkg/sqlparse"
+	"github.com/ilibx/gsql/pkg/parser"
 )
 
 type LogicalNode interface {
@@ -39,10 +39,10 @@ func (n *LogicalCTEScan) Children() []LogicalNode { return nil }
 
 type LogicalFilter struct {
 	Child     LogicalNode
-	Predicate sqlparse.Expression
+	Predicate parser.Expression
 }
 
-func NewLogicalFilter(child LogicalNode, predicate sqlparse.Expression) *LogicalFilter {
+func NewLogicalFilter(child LogicalNode, predicate parser.Expression) *LogicalFilter {
 	return &LogicalFilter{Child: child, Predicate: predicate}
 }
 
@@ -53,10 +53,10 @@ func (n *LogicalFilter) Children() []LogicalNode { return []LogicalNode{n.Child}
 type LogicalProject struct {
 	Child   LogicalNode
 	Columns []string
-	Exprs   []sqlparse.Expression
+	Exprs   []parser.Expression
 }
 
-func NewLogicalProject(child LogicalNode, columns []string, exprs []sqlparse.Expression) *LogicalProject {
+func NewLogicalProject(child LogicalNode, columns []string, exprs []parser.Expression) *LogicalProject {
 	return &LogicalProject{Child: child, Columns: columns, Exprs: exprs}
 }
 
@@ -95,10 +95,10 @@ func (n *LogicalAggregate) Children() []LogicalNode { return []LogicalNode{n.Chi
 
 type LogicalWindow struct {
 	Child       LogicalNode
-	WindowExprs []sqlparse.WindowExpr
+	WindowExprs []parser.WindowExpr
 }
 
-func NewLogicalWindow(child LogicalNode, windowExprs []sqlparse.WindowExpr) *LogicalWindow {
+func NewLogicalWindow(child LogicalNode, windowExprs []parser.WindowExpr) *LogicalWindow {
 	return &LogicalWindow{Child: child, WindowExprs: windowExprs}
 }
 
@@ -108,10 +108,10 @@ func (n *LogicalWindow) Children() []LogicalNode { return []LogicalNode{n.Child}
 
 type LogicalSort struct {
 	Child   LogicalNode
-	OrderBy []sqlparse.SortOrder
+	OrderBy []parser.SortOrder
 }
 
-func NewLogicalSort(child LogicalNode, orderBy []sqlparse.SortOrder) *LogicalSort {
+func NewLogicalSort(child LogicalNode, orderBy []parser.SortOrder) *LogicalSort {
 	return &LogicalSort{Child: child, OrderBy: orderBy}
 }
 

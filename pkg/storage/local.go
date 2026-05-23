@@ -27,8 +27,20 @@ type TableReader interface {
 }
 
 type PartitionFilter struct {
-	Column string
-	Value  string
+	Column   string
+	Operator string
+	Value    string
+}
+
+type partitionFilterCond struct {
+	Operator string
+	Value    string
+}
+
+// partitionFile describes a data file with its inferred partition values.
+type partitionFile struct {
+	Path            string
+	PartitionValues map[string]string
 }
 
 func ReadTableRows(tbl *catalog.Table, filters ...PartitionFilter) ([]Row, error) {
@@ -64,23 +76,29 @@ func readLocalTable(tbl *catalog.Table, filters []PartitionFilter) ([]Row, error
 
 	pattern := tbl.Option("file_pattern", "*")
 
-	var paths []string
+	var partitions []partitionFile
 	var err error
-	if len(tbl.PartitionBy) > 0 {
-		paths, err = resolvePartitionPaths(location, pattern, tbl.PartitionBy, filters)
+	isPartitioned := len(tbl.PartitionBy) > 0
+	if isPartitioned {
+		partitions, err = resolvePartitionPaths(location, pattern, tbl.PartitionBy, filters)
 		if err != nil {
 			return nil, err
 		}
-		if len(paths) == 0 {
+		if len(partitions) == 0 {
 			return nil, fmt.Errorf("no files found for table %s at %s matching partition filters", tbl.Name, location)
 		}
 	} else {
+		var paths []string
 		paths, err = resolveLocalPaths(location, pattern)
 		if err != nil {
 			return nil, err
 		}
 		if len(paths) == 0 {
 			return nil, fmt.Errorf("no files found for table %s at %s", tbl.Name, location)
+		}
+		partitions = make([]partitionFile, len(paths))
+		for i, p := range paths {
+			partitions[i] = partitionFile{Path: p}
 		}
 	}
 
@@ -89,24 +107,37 @@ func readLocalTable(tbl *catalog.Table, filters []PartitionFilter) ([]Row, error
 		err  error
 	}
 
-	resultCh := make(chan fileResult, len(paths))
-	for _, path := range paths {
-		go func(path string) {
+	resultCh := make(chan fileResult, len(partitions))
+	for _, pf := range partitions {
+		go func(pf partitionFile) {
+			var fileRows []Row
+			var readErr error
 			switch format {
 			case "csv":
-				fileRows, err := readCSV(path, tbl.Columns)
-				resultCh <- fileResult{rows: fileRows, err: err}
+				fileRows, readErr = readCSV(pf.Path, tbl.Columns)
 			case "json":
-				fileRows, err := readJSON(path, tbl.Columns)
-				resultCh <- fileResult{rows: fileRows, err: err}
+				fileRows, readErr = readJSON(pf.Path, tbl.Columns)
 			default:
 				resultCh <- fileResult{err: fmt.Errorf("unsupported format %q", format)}
+				return
 			}
-		}(path)
+			if readErr != nil {
+				resultCh <- fileResult{err: readErr}
+				return
+			}
+			if len(pf.PartitionValues) > 0 {
+				for i := range fileRows {
+					for k, v := range pf.PartitionValues {
+						fileRows[i][k] = v
+					}
+				}
+			}
+			resultCh <- fileResult{rows: fileRows}
+		}(pf)
 	}
 
 	var rows []Row
-	for i := 0; i < len(paths); i++ {
+	for i := 0; i < len(partitions); i++ {
 		result := <-resultCh
 		if result.err != nil {
 			return nil, result.err
@@ -116,10 +147,30 @@ func readLocalTable(tbl *catalog.Table, filters []PartitionFilter) ([]Row, error
 	return rows, nil
 }
 
-func resolvePartitionPaths(location, pattern string, partitionCols []string, filters []PartitionFilter) ([]string, error) {
-	filterMap := make(map[string]string)
+func resolvePartitionPaths(location, pattern string, partitionCols []string, filters []PartitionFilter) ([]partitionFile, error) {
+	filterMap := make(map[string][]partitionFilterCond)
 	for _, f := range filters {
-		filterMap[f.Column] = f.Value
+		filterMap[f.Column] = append(filterMap[f.Column], partitionFilterCond{Operator: f.Operator, Value: f.Value})
+	}
+
+	// Auto-detect partition format: check if first partition level uses col=value or bare directories
+	useBareFormat := false
+	if firstEntries, err := os.ReadDir(location); err == nil && len(partitionCols) > 0 {
+		hasColEq := false
+		hasBareDir := false
+		prefix := partitionCols[0] + "="
+		for _, e := range firstEntries {
+			if !e.IsDir() {
+				continue
+			}
+			if strings.HasPrefix(e.Name(), prefix) {
+				hasColEq = true
+			} else {
+				hasBareDir = true
+			}
+		}
+		// Only use bare format if there are no col=value dirs
+		useBareFormat = !hasColEq && hasBareDir
 	}
 
 	dirs := []string{location}
@@ -133,14 +184,26 @@ func resolvePartitionPaths(location, pattern string, partitionCols []string, fil
 				}
 				return nil, err
 			}
-			prefix := col + "="
 			for _, e := range entries {
-				if !e.IsDir() || !strings.HasPrefix(e.Name(), prefix) {
+				if !e.IsDir() {
 					continue
 				}
-				val := strings.TrimPrefix(e.Name(), prefix)
-				if filterVal, ok := filterMap[col]; ok && val != filterVal {
-					continue
+				var val string
+				if useBareFormat {
+					val = e.Name()
+				} else {
+					prefix := col + "="
+					if !strings.HasPrefix(e.Name(), prefix) {
+						continue
+					}
+					val = strings.TrimPrefix(e.Name(), prefix)
+				}
+
+				// Check all filters for this column
+				if filters, ok := filterMap[col]; ok {
+					if !matchPartitionValue(val, filters) {
+						continue
+					}
 				}
 				next = append(next, filepath.Join(dir, e.Name()))
 			}
@@ -151,16 +214,70 @@ func resolvePartitionPaths(location, pattern string, partitionCols []string, fil
 		dirs = next
 	}
 
-	// At the last partition level, list files matching pattern
-	var files []string
+	var files []partitionFile
 	for _, dir := range dirs {
 		matches, err := filepath.Glob(filepath.Join(dir, pattern))
 		if err != nil {
 			return nil, err
 		}
-		files = append(files, matches...)
+		for _, match := range matches {
+			pf := partitionFile{Path: match, PartitionValues: make(map[string]string)}
+			// Extract partition values from directory path relative to location
+			if rel, err := filepath.Rel(location, filepath.Dir(match)); err == nil {
+				parts := strings.Split(rel, string(filepath.Separator))
+				for i, col := range partitionCols {
+					if i < len(parts) {
+						val := parts[i]
+						if !useBareFormat {
+							// col=value format: strip the "col=" prefix
+							if _, after, found := strings.Cut(val, "="); found {
+								val = after
+							}
+						}
+						pf.PartitionValues[col] = val
+					}
+				}
+			}
+			files = append(files, pf)
+		}
 	}
 	return files, nil
+}
+
+func matchPartitionValue(val string, conds []partitionFilterCond) bool {
+	for _, c := range conds {
+		op := c.Operator
+		if op == "" {
+			op = "="
+		}
+		switch op {
+		case "=":
+			if val != c.Value {
+				return false
+			}
+		case "!=":
+			if val == c.Value {
+				return false
+			}
+		case ">":
+			if !(val > c.Value) {
+				return false
+			}
+		case "<":
+			if !(val < c.Value) {
+				return false
+			}
+		case ">=":
+			if !(val >= c.Value) {
+				return false
+			}
+		case "<=":
+			if !(val <= c.Value) {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func resolveLocalPaths(location, pattern string) ([]string, error) {
@@ -292,14 +409,28 @@ func writeLocalTable(tbl *catalog.Table, rows []Row, appendMode bool) error {
 		outputPath = f.Name()
 	}
 
+	// Use atomic write: write to temp file, then rename
+	tmpPath := outputPath + ".tmp"
 	switch format {
 	case "csv":
-		return writeCSV(outputPath, tbl.Columns, rows)
+		if err := writeCSV(tmpPath, tbl.Columns, rows); err != nil {
+			os.Remove(tmpPath)
+			return err
+		}
 	case "json":
-		return writeJSON(outputPath, rows)
+		if err := writeJSON(tmpPath, rows); err != nil {
+			os.Remove(tmpPath)
+			return err
+		}
 	default:
 		return fmt.Errorf("unsupported write format %q", format)
 	}
+
+	if err := os.Rename(tmpPath, outputPath); err != nil {
+		os.Remove(tmpPath)
+		return fmt.Errorf("failed to rename temp file: %w", err)
+	}
+	return nil
 }
 
 func writePartitionedTable(location, outputFile, format string, tbl *catalog.Table, rows []Row, appendMode bool) error {
@@ -321,7 +452,7 @@ func writePartitionedTable(location, outputFile, format string, tbl *catalog.Tab
 		if err := os.MkdirAll(partDir, 0o755); err != nil {
 			return err
 		}
-		outPath := filepath.Join(partDir, outputFile)
+		var outPath string
 		if appendMode {
 			f, err := os.CreateTemp(partDir, tempFilePattern(outputFile))
 			if err != nil {
@@ -329,18 +460,29 @@ func writePartitionedTable(location, outputFile, format string, tbl *catalog.Tab
 			}
 			f.Close()
 			outPath = f.Name()
+		} else {
+			outPath = filepath.Join(partDir, outputFile)
 		}
+
+		// Atomic write: write to temp, then rename
+		tmpPath := outPath + ".tmp"
 		switch format {
 		case "csv":
-			if err := writeCSV(outPath, tbl.Columns, partRows); err != nil {
+			if err := writeCSV(tmpPath, tbl.Columns, partRows); err != nil {
+				os.Remove(tmpPath)
 				return err
 			}
 		case "json":
-			if err := writeJSON(outPath, partRows); err != nil {
+			if err := writeJSON(tmpPath, partRows); err != nil {
+				os.Remove(tmpPath)
 				return err
 			}
 		default:
 			return fmt.Errorf("unsupported write format %q", format)
+		}
+		if err := os.Rename(tmpPath, outPath); err != nil {
+			os.Remove(tmpPath)
+			return fmt.Errorf("failed to rename temp file: %w", err)
 		}
 	}
 	return nil

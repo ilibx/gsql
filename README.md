@@ -53,6 +53,7 @@ gsql 拥有以下核心层次：
 - `LIMIT`
 - `INSERT OVERWRITE TABLE ... SELECT ...`
 - `PARTITIONED BY (col1, col2, ...)` 分区表定义，写入时自动按分区列值写入子目录
+- 分区表读取时自动从目录路径注入分区列值，支持等值和范围（`>`, `<`, `>=`, `<=`）分区裁剪，自动识别 `col=value` 和裸值两种目录格式
 - 本地 `CSV` / `JSON` 数据读取与写入
 - **云存储与远程数据源支持**：
   - `S3` / S3兼容服务（MinIO、阿里OSS等）
@@ -112,6 +113,65 @@ PARTITIONED BY (dt);
 ```
 
 写入时自动按 `dt` 值分组写入子目录，如 `dt=2024-01-01/data.csv`。
+
+### Hive 风格分区（读取）
+
+支持读取已按 Hive 风格目录结构组织的数据：
+
+**`col=value` 格式目录**（自动识别）：
+```
+/data/events/
+  year=2024/
+    month=01/
+      data.csv
+    month=02/
+      data.csv
+```
+
+**裸值格式目录**（自动识别）：
+```
+samples/orders/2026/
+  01/
+    data.csv
+  02/
+    data.csv
+```
+
+两种格式自动检测——如果第一级子目录不含 `col=` 前缀则视为裸值格式。
+
+```sql
+CREATE TABLE partitioned_orders (
+  order_id INT,
+  user_id INT,
+  product_id INT,
+  quantity INT,
+  amount INT,
+  order_date STRING
+)
+WITH (
+  storage = 'local',
+  format = 'csv',
+  location = 'samples/orders',
+  file_pattern = 'data.csv'
+)
+PARTITIONED BY (year, month);
+```
+
+查询时支持 **分区列自动注入**——`year` 和 `month` 值从目录路径提取并附加到每行数据：
+```sql
+-- 等值分区裁剪：只读取匹配的分区目录
+SELECT * FROM partitioned_orders WHERE year = 2026 AND month = '03';
+
+-- 范围分区裁剪：支持 >, <, >=, <=
+SELECT * FROM partitioned_orders WHERE year >= 2026 AND month >= '05';
+
+-- 分区列可参与聚合和排序
+SELECT month, COUNT(*), SUM(amount)
+FROM partitioned_orders
+WHERE year = 2026
+GROUP BY month
+ORDER BY month;
+```
 
 ### 插入覆盖结果表
 
@@ -258,7 +318,7 @@ gsql 支持多种存储后端：
 
 | 存储类型 | 说明 | 配置参数 |
 |---------|------|---------|
-| `local` | 本地文件系统 | `location`, `file_pattern`, `file_name` |
+| `local` | 本地文件系统（支持分区表目录结构自动检测） | `location`, `file_pattern`, `file_name` |
 | `s3` | AWS S3 或 S3兼容服务 | `s3_bucket`, `s3_region`, `s3_prefix`, `s3_endpoint`(可选) |
 | `ftp` | FTP 服务器 | `ftp_host`, `ftp_port`, `ftp_user`, `ftp_pass`, `ftp_path` |
 | `sftp` | SFTP 服务器 | `sftp_host`, `sftp_port`, `sftp_user`, `sftp_pass`, `sftp_path` |
@@ -269,5 +329,4 @@ gsql 支持多种存储后端：
 
 - 支持更多 SQL 标准特性（UNION、INTERSECT、EXCEPT等）
 - 添加更完善的 SQL 解析器与优化器
-- 进一步扩展执行计划算子与分区裁剪逻辑
 - 支持分布式执行或更大规模并行模型

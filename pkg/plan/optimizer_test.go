@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"github.com/ilibx/gsql/pkg/catalog"
-	"github.com/ilibx/gsql/pkg/sqlparse"
+	"github.com/ilibx/gsql/pkg/parser"
 )
 
 func TestExplainLogical(t *testing.T) {
@@ -61,7 +61,7 @@ func TestColumnPruning(t *testing.T) {
 	// Build: Filter(age > 0) -> Scan(users)
 	filter := NewLogicalFilter(
 		NewLogicalScan("users", ""),
-		&sqlparse.ComparisonExpr{Column: "age", Operator: ">", Value: "0"},
+		&parser.ComparisonExpr{Column: "age", Operator: ">", Value: "0"},
 	)
 
 	opt := DefaultOptimizer()
@@ -89,12 +89,12 @@ func TestColumnPruningMultipleRefs(t *testing.T) {
 	agg := NewLogicalAggregate(
 		NewLogicalFilter(
 			NewLogicalScan("orders", ""),
-			&sqlparse.ComparisonExpr{Column: "age", Operator: ">", Value: "0"},
+			&parser.ComparisonExpr{Column: "age", Operator: ">", Value: "0"},
 		),
 		[]string{"name"},
 		[]AggregateDef{{FuncName: "SUM", Column: "amount"}},
 	)
-	sort := NewLogicalSort(agg, []sqlparse.SortOrder{{Column: "id"}, {Column: "name", Desc: true}})
+	sort := NewLogicalSort(agg, []parser.SortOrder{{Column: "id"}, {Column: "name", Desc: true}})
 
 	opt := DefaultOptimizer()
 	optimized := opt.OptimizeWithPruning(sort)
@@ -135,8 +135,8 @@ func TestColumnPruningMultipleRefs(t *testing.T) {
 
 func TestMergeFilters(t *testing.T) {
 	// Build: Filter(A) -> Filter(B) -> Scan
-	condA := &sqlparse.ComparisonExpr{Column: "a", Operator: "=", Value: "1"}
-	condB := &sqlparse.ComparisonExpr{Column: "b", Operator: ">", Value: "0"}
+	condA := &parser.ComparisonExpr{Column: "a", Operator: "=", Value: "1"}
+	condB := &parser.ComparisonExpr{Column: "b", Operator: ">", Value: "0"}
 	innerFilter := NewLogicalFilter(NewLogicalScan("t", ""), condB)
 	outerFilter := NewLogicalFilter(innerFilter, condA)
 
@@ -148,7 +148,7 @@ func TestMergeFilters(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected LogicalFilter, got %T", optimized)
 	}
-	logical, ok := filter.Predicate.(*sqlparse.LogicalExpr)
+	logical, ok := filter.Predicate.(*parser.LogicalExpr)
 	if !ok {
 		t.Fatalf("expected LogicalExpr (merged), got %T", filter.Predicate)
 	}
@@ -188,7 +188,7 @@ func TestExtractPartitionFilters(t *testing.T) {
 	partitionCols := []string{"dt", "year"}
 
 	t.Run("simple equality", func(t *testing.T) {
-		expr := &sqlparse.ComparisonExpr{Column: "dt", Operator: "=", Value: "2024-01-01"}
+		expr := &parser.ComparisonExpr{Column: "dt", Operator: "=", Value: "2024-01-01"}
 		remaining, filters := extractPartitionFilters(expr, partitionCols)
 		if len(filters) != 1 || filters[0].Column != "dt" || filters[0].Value != "2024-01-01" {
 			t.Errorf("unexpected filters: %v", filters)
@@ -199,7 +199,7 @@ func TestExtractPartitionFilters(t *testing.T) {
 	})
 
 	t.Run("non-partition equality", func(t *testing.T) {
-		expr := &sqlparse.ComparisonExpr{Column: "name", Operator: "=", Value: "alice"}
+		expr := &parser.ComparisonExpr{Column: "name", Operator: "=", Value: "alice"}
 		remaining, filters := extractPartitionFilters(expr, partitionCols)
 		if len(filters) != 0 {
 			t.Errorf("expected 0 filters, got %d", len(filters))
@@ -210,9 +210,9 @@ func TestExtractPartitionFilters(t *testing.T) {
 	})
 
 	t.Run("AND with partition equality", func(t *testing.T) {
-		nameEq := &sqlparse.ComparisonExpr{Column: "name", Operator: "=", Value: "alice"}
-		dtEq := &sqlparse.ComparisonExpr{Column: "dt", Operator: "=", Value: "2024-01-01"}
-		expr := &sqlparse.LogicalExpr{Left: nameEq, Operator: "AND", Right: dtEq}
+		nameEq := &parser.ComparisonExpr{Column: "name", Operator: "=", Value: "alice"}
+		dtEq := &parser.ComparisonExpr{Column: "dt", Operator: "=", Value: "2024-01-01"}
+		expr := &parser.LogicalExpr{Left: nameEq, Operator: "AND", Right: dtEq}
 		remaining, filters := extractPartitionFilters(expr, partitionCols)
 		if len(filters) != 1 || filters[0].Column != "dt" {
 			t.Errorf("expected 1 dt filter, got %v", filters)
@@ -220,20 +220,20 @@ func TestExtractPartitionFilters(t *testing.T) {
 		if remaining == nil {
 			t.Fatal("expected remaining predicate (name equality)")
 		}
-		comp, ok := remaining.(*sqlparse.ComparisonExpr)
+		comp, ok := remaining.(*parser.ComparisonExpr)
 		if !ok || comp.Column != "name" {
 			t.Errorf("expected remaining name comparison, got %T %v", remaining, remaining)
 		}
 	})
 
-	t.Run("non-equality operator", func(t *testing.T) {
-		expr := &sqlparse.ComparisonExpr{Column: "dt", Operator: ">", Value: "2024-01-01"}
+	t.Run("range operator", func(t *testing.T) {
+		expr := &parser.ComparisonExpr{Column: "dt", Operator: ">", Value: "2024-01-01"}
 		remaining, filters := extractPartitionFilters(expr, partitionCols)
-		if len(filters) != 0 {
-			t.Errorf("expected 0 filters for non-equality, got %d", len(filters))
+		if len(filters) != 1 || filters[0].Column != "dt" || filters[0].Operator != ">" || filters[0].Value != "2024-01-01" {
+			t.Errorf("expected 1 dt range filter, got %v", filters)
 		}
-		if remaining != expr {
-			t.Errorf("expected expr to be preserved")
+		if remaining != nil {
+			t.Errorf("expected nil remaining, got %v", remaining)
 		}
 	})
 
@@ -337,7 +337,7 @@ func TestEstimateRows(t *testing.T) {
 		t.Errorf("expected 1000, got %f", rows)
 	}
 
-	filter := NewLogicalFilter(scan, &sqlparse.ComparisonExpr{Column: "age", Operator: ">", Value: "0"})
+	filter := NewLogicalFilter(scan, &parser.ComparisonExpr{Column: "age", Operator: ">", Value: "0"})
 	rows = EstimateRows(filter, tables)
 	if rows != 200 {
 		t.Errorf("expected 200 (20%% of 1000), got %f", rows)

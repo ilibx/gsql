@@ -8,15 +8,15 @@ import (
 	"testing"
 
 	"github.com/ilibx/gsql/pkg/catalog"
-	"github.com/ilibx/gsql/pkg/sqlparse"
+	"github.com/ilibx/gsql/pkg/parser"
 )
 
 func TestEngineCreateTable(t *testing.T) {
 	cat := catalog.NewCatalog()
 	engine := NewEngine(cat)
-	stmt := &sqlparse.CreateTableStmt{
+	stmt := &parser.CreateTableStmt{
 		Name: "users",
-		Columns: []sqlparse.ColumnDef{
+		Columns: []parser.ColumnDef{
 			{Name: "id", Type: "INT"},
 		},
 		WithOptions: map[string]string{"storage": "local"},
@@ -57,7 +57,7 @@ func TestEngineSelectFromLocalCSV(t *testing.T) {
 		t.Fatalf("create table failed: %v", err)
 	}
 
-	rows, err := engine.executeSelect(&sqlparse.SelectQuery{
+	rows, err := engine.executeSelect(&parser.SelectQuery{
 		Columns: []string{"id", "name"},
 		Table:   "users",
 	})
@@ -105,11 +105,11 @@ func TestEngineSelectWithCTE(t *testing.T) {
 )
 SELECT id, name FROM recent_users`
 
-	stmts, err := sqlparse.NewParser().Parse(query)
+	stmts, err := parser.NewParser().Parse(query)
 	if err != nil {
 		t.Fatalf("parse query failed: %v", err)
 	}
-	selectStmt, ok := stmts[0].(*sqlparse.SelectStmt)
+	selectStmt, ok := stmts[0].(*parser.SelectStmt)
 	if !ok {
 		t.Fatalf("expected SelectStmt, got %T", stmts[0])
 	}
@@ -153,10 +153,10 @@ func TestEngineSelectWithLikePredicate(t *testing.T) {
 		t.Fatalf("create table failed: %v", err)
 	}
 
-	rows, err := engine.executeSelect(&sqlparse.SelectQuery{
+	rows, err := engine.executeSelect(&parser.SelectQuery{
 		Columns: []string{"id", "name"},
 		Table:   "users",
-		Where:   &sqlparse.ComparisonExpr{Column: "email", Operator: "LIKE", Value: "%@example.com"},
+		Where:   &parser.ComparisonExpr{Column: "email", Operator: "LIKE", Value: "%@example.com"},
 	})
 	if err != nil {
 		t.Fatalf("execute select failed: %v", err)
@@ -197,13 +197,13 @@ func TestEngineSelectWithAndOrWhere(t *testing.T) {
 		t.Fatalf("create table failed: %v", err)
 	}
 
-	rows, err := engine.executeSelect(&sqlparse.SelectQuery{
+	rows, err := engine.executeSelect(&parser.SelectQuery{
 		Columns: []string{"id", "name"},
 		Table:   "users",
-		Where: &sqlparse.LogicalExpr{
-			Left:     &sqlparse.ComparisonExpr{Column: "age", Operator: ">=", Value: "30"},
+		Where: &parser.LogicalExpr{
+			Left:     &parser.ComparisonExpr{Column: "age", Operator: ">=", Value: "30"},
 			Operator: "AND",
-			Right:    &sqlparse.ComparisonExpr{Column: "name", Operator: "!=", Value: "bob"},
+			Right:    &parser.ComparisonExpr{Column: "name", Operator: "!=", Value: "bob"},
 		},
 	})
 	if err != nil {
@@ -245,11 +245,11 @@ func TestEngineSelectGroupByCount(t *testing.T) {
 		t.Fatalf("create table failed: %v", err)
 	}
 
-	rows, err := engine.executeSelect(&sqlparse.SelectQuery{
+	rows, err := engine.executeSelect(&parser.SelectQuery{
 		Columns:    []string{"name", "COUNT(*)"},
 		Table:      "users",
 		GroupBy:    []string{"name"},
-		Aggregates: []sqlparse.AggregateExpr{{FuncName: "COUNT", Column: "*"}},
+		Aggregates: []parser.AggregateExpr{{FuncName: "COUNT", Column: "*"}},
 	})
 	if err != nil {
 		t.Fatalf("execute select with group by failed: %v", err)
@@ -293,10 +293,10 @@ func TestEngineSelectAggregateSumAvg(t *testing.T) {
 		t.Fatalf("create table failed: %v", err)
 	}
 
-	rows, err := engine.executeSelect(&sqlparse.SelectQuery{
+	rows, err := engine.executeSelect(&parser.SelectQuery{
 		Columns:    []string{"SUM(age)", "AVG(age)"},
 		Table:      "users",
-		Aggregates: []sqlparse.AggregateExpr{{FuncName: "SUM", Column: "age"}, {FuncName: "AVG", Column: "age"}},
+		Aggregates: []parser.AggregateExpr{{FuncName: "SUM", Column: "age"}, {FuncName: "AVG", Column: "age"}},
 	})
 	if err != nil {
 		t.Fatalf("execute select with aggregates failed: %v", err)
@@ -340,12 +340,12 @@ func TestEngineSelectGroupByWithFilter(t *testing.T) {
 		t.Fatalf("create table failed: %v", err)
 	}
 
-	rows, err := engine.executeSelect(&sqlparse.SelectQuery{
+	rows, err := engine.executeSelect(&parser.SelectQuery{
 		Columns:    []string{"name", "COUNT(*)"},
 		Table:      "users",
-		Where:      &sqlparse.ComparisonExpr{Column: "age", Operator: ">=", Value: "30"},
+		Where:      &parser.ComparisonExpr{Column: "age", Operator: ">=", Value: "30"},
 		GroupBy:    []string{"name"},
-		Aggregates: []sqlparse.AggregateExpr{{FuncName: "COUNT", Column: "*"}},
+		Aggregates: []parser.AggregateExpr{{FuncName: "COUNT", Column: "*"}},
 	})
 	if err != nil {
 		t.Fatalf("execute select failed: %v", err)
@@ -390,12 +390,12 @@ func TestEngineSelectHaving(t *testing.T) {
 		t.Fatalf("create table failed: %v", err)
 	}
 
-	rows, err := engine.executeSelect(&sqlparse.SelectQuery{
+	rows, err := engine.executeSelect(&parser.SelectQuery{
 		Columns:    []string{"name", "COUNT(*)"},
 		Table:      "users",
 		GroupBy:    []string{"name"},
-		Aggregates: []sqlparse.AggregateExpr{{FuncName: "COUNT", Column: "*"}},
-		Having:     &sqlparse.ComparisonExpr{Column: "COUNT(*)", Operator: ">", Value: "1"},
+		Aggregates: []parser.AggregateExpr{{FuncName: "COUNT", Column: "*"}},
+		Having:     &parser.ComparisonExpr{Column: "COUNT(*)", Operator: ">", Value: "1"},
 	})
 	if err != nil {
 		t.Fatalf("execute select with HAVING failed: %v", err)
@@ -439,9 +439,9 @@ func TestEngineSelectFromSubquery(t *testing.T) {
 		t.Fatalf("create table failed: %v", err)
 	}
 
-	rows, err := engine.executeSelect(&sqlparse.SelectQuery{
+	rows, err := engine.executeSelect(&parser.SelectQuery{
 		Columns: []string{"id", "name"},
-		FromSubquery: &sqlparse.SelectQuery{
+		FromSubquery: &parser.SelectQuery{
 			Columns: []string{"id", "name", "age"},
 			Table:   "users",
 		},
@@ -486,12 +486,12 @@ func TestEngineSelectSubqueryWithWhere(t *testing.T) {
 		t.Fatalf("create table failed: %v", err)
 	}
 
-	rows, err := engine.executeSelect(&sqlparse.SelectQuery{
+	rows, err := engine.executeSelect(&parser.SelectQuery{
 		Columns: []string{"id", "name"},
-		FromSubquery: &sqlparse.SelectQuery{
+		FromSubquery: &parser.SelectQuery{
 			Columns: []string{"id", "name", "age"},
 			Table:   "users",
-			Where:   &sqlparse.ComparisonExpr{Column: "age", Operator: ">=", Value: "30"},
+			Where:   &parser.ComparisonExpr{Column: "age", Operator: ">=", Value: "30"},
 		},
 		FromAlias: "sub",
 	})
@@ -559,10 +559,10 @@ func TestEngineJoin(t *testing.T) {
 		t.Fatalf("create orders table failed: %v", err)
 	}
 
-	rows, err := engine.executeSelect(&sqlparse.SelectQuery{
+	rows, err := engine.executeSelect(&parser.SelectQuery{
 		Columns: []string{"name", "amount"},
 		Table:   "users",
-		Joins: []sqlparse.JoinClause{
+		Joins: []parser.JoinClause{
 			{RightTable: "orders", LeftColumn: "id", RightColumn: "user_id"},
 		},
 	})
@@ -645,13 +645,13 @@ func TestEngineJoinWithWhere(t *testing.T) {
 		t.Fatalf("create orders table failed: %v", err)
 	}
 
-	rows, err := engine.executeSelect(&sqlparse.SelectQuery{
+	rows, err := engine.executeSelect(&parser.SelectQuery{
 		Columns: []string{"name", "amount"},
 		Table:   "users",
-		Joins: []sqlparse.JoinClause{
+		Joins: []parser.JoinClause{
 			{RightTable: "orders", LeftColumn: "id", RightColumn: "user_id"},
 		},
-		Where: &sqlparse.ComparisonExpr{Column: "amount", Operator: ">", Value: "200"},
+		Where: &parser.ComparisonExpr{Column: "amount", Operator: ">", Value: "200"},
 	})
 	if err != nil {
 		t.Fatalf("execute join with where failed: %v", err)
@@ -710,9 +710,9 @@ func TestEngineInsertOverwriteTable(t *testing.T) {
 		t.Fatalf("create target table failed: %v", err)
 	}
 
-	stmt := &sqlparse.InsertOverwriteStmt{
+	stmt := &parser.InsertOverwriteStmt{
 		TableName: "result_users",
-		Query: &sqlparse.SelectQuery{
+		Query: &parser.SelectQuery{
 			Columns: []string{"id", "name"},
 			Table:   "users",
 		},
@@ -757,7 +757,7 @@ func TestEngineEmptyCSV(t *testing.T) {
 		t.Fatalf("create table failed: %v", err)
 	}
 
-	rows, err := engine.executeSelect(&sqlparse.SelectQuery{
+	rows, err := engine.executeSelect(&parser.SelectQuery{
 		Columns: []string{"id", "name"},
 		Table:   "users",
 	})
@@ -797,7 +797,7 @@ func TestEngineCSVWithEmptyFields(t *testing.T) {
 		t.Fatalf("create table failed: %v", err)
 	}
 
-	rows, err := engine.executeSelect(&sqlparse.SelectQuery{
+	rows, err := engine.executeSelect(&parser.SelectQuery{
 		Columns: []string{"id", "name", "email"},
 		Table:   "users",
 	})
@@ -843,7 +843,7 @@ func TestEngineCSVWithQuotedFields(t *testing.T) {
 		t.Fatalf("create table failed: %v", err)
 	}
 
-	rows, err := engine.executeSelect(&sqlparse.SelectQuery{
+	rows, err := engine.executeSelect(&parser.SelectQuery{
 		Columns: []string{"id", "name", "email"},
 		Table:   "users",
 	})
@@ -889,7 +889,7 @@ func TestEngineCSVMissingColumns(t *testing.T) {
 		t.Fatalf("create table failed: %v", err)
 	}
 
-	rows, err := engine.executeSelect(&sqlparse.SelectQuery{
+	rows, err := engine.executeSelect(&parser.SelectQuery{
 		Columns: []string{"id", "name", "email"},
 		Table:   "users",
 	})
@@ -953,11 +953,11 @@ func TestEngineTableAliasedJoin(t *testing.T) {
 		t.Fatalf("create orders table failed: %v", err)
 	}
 
-	rows, err := engine.executeSelect(&sqlparse.SelectQuery{
+	rows, err := engine.executeSelect(&parser.SelectQuery{
 		Columns:    []string{"u.name", "o.amount"},
 		Table:      "users",
 		TableAlias: "u",
-		Joins: []sqlparse.JoinClause{
+		Joins: []parser.JoinClause{
 			{RightTable: "orders", RightAlias: "o", LeftColumn: "u.id", RightColumn: "o.user_id"},
 		},
 	})
@@ -1006,12 +1006,12 @@ func TestEngineColumnAliasOrderBy(t *testing.T) {
 		t.Fatalf("create table failed: %v", err)
 	}
 
-	rows, err := engine.executeSelect(&sqlparse.SelectQuery{
+	rows, err := engine.executeSelect(&parser.SelectQuery{
 		Columns:       []string{"name", "SUM(age)"},
 		Table:         "users",
 		GroupBy:       []string{"name"},
-		Aggregates:    []sqlparse.AggregateExpr{{FuncName: "SUM", Column: "age"}},
-		OrderBy:       []sqlparse.SortOrder{{Column: "total"}},
+		Aggregates:    []parser.AggregateExpr{{FuncName: "SUM", Column: "age"}},
+		OrderBy:       []parser.SortOrder{{Column: "total"}},
 		ColumnAliases: map[string]string{"total": "SUM(age)"},
 	})
 	if err != nil {
@@ -1047,10 +1047,10 @@ func TestEngineWindowRowNumber(t *testing.T) {
 	}
 
 	engine := NewEngine(cat)
-	rows, err := engine.executeSelect(&sqlparse.SelectQuery{
+	rows, err := engine.executeSelect(&parser.SelectQuery{
 		Columns:     []string{"name", "ROW_NUMBER()"},
 		Table:       "users",
-		WindowExprs: []sqlparse.WindowExpr{
+		WindowExprs: []parser.WindowExpr{
 			{FuncName: "ROW_NUMBER", Args: nil, PartitionBy: nil, OrderBy: nil},
 		},
 	})
@@ -1115,9 +1115,9 @@ func TestEngineInsertOverwritePartitionedTable(t *testing.T) {
 		t.Fatalf("create target table failed: %v", err)
 	}
 
-	stmt := &sqlparse.InsertOverwriteStmt{
+	stmt := &parser.InsertOverwriteStmt{
 		TableName: "events_partitioned",
-		Query: &sqlparse.SelectQuery{
+		Query: &parser.SelectQuery{
 			Columns: []string{"id", "name", "dt"},
 			Table:   "events",
 		},
@@ -1189,10 +1189,10 @@ func TestEngineInsertInto(t *testing.T) {
 		t.Fatalf("create target table failed: %v", err)
 	}
 
-	stmt1 := &sqlparse.InsertOverwriteStmt{
+	stmt1 := &parser.InsertOverwriteStmt{
 		TableName: "result",
 		Append:    true,
-		Query: &sqlparse.SelectQuery{
+		Query: &parser.SelectQuery{
 			Columns: []string{"id", "name"},
 			Table:   "users",
 		},
@@ -1267,9 +1267,9 @@ func TestEnginePartitionPruning(t *testing.T) {
 		t.Fatalf("create target table failed: %v", err)
 	}
 
-	writeStmt := &sqlparse.InsertOverwriteStmt{
+	writeStmt := &parser.InsertOverwriteStmt{
 		TableName: "events_partitioned",
-		Query: &sqlparse.SelectQuery{
+		Query: &parser.SelectQuery{
 			Columns: []string{"id", "name", "dt"},
 			Table:   "events",
 		},
@@ -1278,10 +1278,10 @@ func TestEnginePartitionPruning(t *testing.T) {
 		t.Fatalf("write failed: %v", err)
 	}
 
-	query := &sqlparse.SelectQuery{
+	query := &parser.SelectQuery{
 		Columns: []string{"id", "name"},
 		Table:   "events_partitioned",
-		Where: &sqlparse.ComparisonExpr{
+		Where: &parser.ComparisonExpr{
 			Column:   "dt",
 			Operator: "=",
 			Value:    "2024-01-01",
@@ -1329,10 +1329,10 @@ func TestEngineUnion(t *testing.T) {
 	createTable("users", "users.csv", []catalog.ColumnDef{{Name: "id", Type: "INT"}, {Name: "name", Type: "STRING"}})
 	createTable("admins", "admins.csv", []catalog.ColumnDef{{Name: "id", Type: "INT"}, {Name: "name", Type: "STRING"}})
 
-	query := &sqlparse.SelectQuery{
+	query := &parser.SelectQuery{
 		Columns: []string{"name"},
 		Table:   "users",
-		UnionQuery: &sqlparse.SelectQuery{
+		UnionQuery: &parser.SelectQuery{
 			Columns: []string{"name"},
 			Table:   "admins",
 		},
@@ -1371,10 +1371,10 @@ func TestEngineUnionDedup(t *testing.T) {
 		t.Fatalf("create table failed: %v", err)
 	}
 
-	query := &sqlparse.SelectQuery{
+	query := &parser.SelectQuery{
 		Columns: []string{"name"},
 		Table:   "data",
-		UnionQuery: &sqlparse.SelectQuery{
+		UnionQuery: &parser.SelectQuery{
 			Columns: []string{"name"},
 			Table:   "data",
 		},
@@ -1412,18 +1412,18 @@ func TestEngineCaseWhen(t *testing.T) {
 		t.Fatalf("create table failed: %v", err)
 	}
 
-	query := &sqlparse.SelectQuery{
+	query := &parser.SelectQuery{
 		Columns: []string{"name", "category"},
-		ColumnExprs: []sqlparse.Expression{
+		ColumnExprs: []parser.Expression{
 			nil,
-			&sqlparse.CaseExpr{
-				Branches: []sqlparse.CaseBranch{
+			&parser.CaseExpr{
+				Branches: []parser.CaseBranch{
 					{
-						Condition: &sqlparse.ComparisonExpr{Column: "age", Operator: ">=", Value: "18"},
-						Result:    &sqlparse.ComparisonExpr{Column: "", Operator: "=", Value: "adult"},
+						Condition: &parser.ComparisonExpr{Column: "age", Operator: ">=", Value: "18"},
+						Result:    &parser.ComparisonExpr{Column: "", Operator: "=", Value: "adult"},
 					},
 				},
-				Else: &sqlparse.ComparisonExpr{Column: "", Operator: "=", Value: "child"},
+				Else: &parser.ComparisonExpr{Column: "", Operator: "=", Value: "child"},
 			},
 		},
 		Table: "users",

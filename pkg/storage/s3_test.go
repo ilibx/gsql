@@ -6,9 +6,6 @@ import (
 	"github.com/ilibx/gsql/pkg/catalog"
 )
 
-// Mock S3 test - these are integration tests that require AWS credentials
-// For now, we provide basic structure for S3 functionality
-
 func TestS3StorageTypeDetection(t *testing.T) {
 	tbl := &catalog.Table{
 		Name: "test_s3_table",
@@ -18,29 +15,23 @@ func TestS3StorageTypeDetection(t *testing.T) {
 		},
 		WithOptions: map[string]string{
 			"storage":      "s3",
-			"s3_bucket":    "test-bucket",
-			"s3_region":    "us-east-1",
-			"s3_prefix":    "data/",
+			"url":          "s3://test-bucket/data/",
+			"region":       "us-east-1",
 			"format":       "csv",
 			"file_pattern": "*.csv",
 		},
 	}
 
-	// Verify storage type is correctly identified
 	storageType := tbl.Option("storage", "local")
 	if storageType != "s3" {
 		t.Errorf("expected storage type 's3', got %q", storageType)
 	}
 
-	// Verify S3 options are present
-	if bucket := tbl.Option("s3_bucket", ""); bucket != "test-bucket" {
-		t.Errorf("expected bucket 'test-bucket', got %q", bucket)
+	if u := tbl.Option("url", ""); u != "s3://test-bucket/data/" {
+		t.Errorf("expected url 's3://test-bucket/data/', got %q", u)
 	}
-	if region := tbl.Option("s3_region", ""); region != "us-east-1" {
+	if region := tbl.Option("region", ""); region != "us-east-1" {
 		t.Errorf("expected region 'us-east-1', got %q", region)
-	}
-	if prefix := tbl.Option("s3_prefix", ""); prefix != "data/" {
-		t.Errorf("expected prefix 'data/', got %q", prefix)
 	}
 }
 
@@ -52,14 +43,14 @@ func TestS3OptionalEndpoint(t *testing.T) {
 		},
 		WithOptions: map[string]string{
 			"storage":       "s3",
-			"s3_bucket":     "test-bucket",
-			"s3_endpoint":   "http://localhost:9000",
+			"url":           "s3://test-bucket/",
+			"endpoint":      "http://localhost:9000",
 			"format":        "csv",
 			"file_pattern":  "*.csv",
 		},
 	}
 
-	if endpoint := tbl.Option("s3_endpoint", ""); endpoint != "http://localhost:9000" {
+	if endpoint := tbl.Option("endpoint", ""); endpoint != "http://localhost:9000" {
 		t.Errorf("expected endpoint 'http://localhost:9000', got %q", endpoint)
 	}
 }
@@ -71,11 +62,10 @@ func TestS3FileNameGeneration(t *testing.T) {
 			{Name: "id", Type: "INT"},
 		},
 		WithOptions: map[string]string{
-			"storage":      "s3",
-			"s3_bucket":    "test-bucket",
-			"s3_prefix":    "output/",
-			"format":       "csv",
-			"file_name":    "result.csv",
+			"storage":   "s3",
+			"url":       "s3://test-bucket/output/",
+			"format":    "csv",
+			"file_name": "result.csv",
 		},
 	}
 
