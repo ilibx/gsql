@@ -1,49 +1,15 @@
 package storage
 
 import (
-	"bufio"
-	"encoding/csv"
-	"encoding/json"
+	"context"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 
 	"github.com/ilibx/gsql/pkg/catalog"
+	"github.com/ilibx/gsql/pkg/serde"
 )
-
-// CSVOptions holds Hive-style CSV parsing options.
-type CSVOptions struct {
-	Delimiter       rune // field separator (default: ',')
-	SkipHeaderLines int  // lines to skip at file start (default: 0)
-	Quote           rune // quote character (default: '"')
-	Escape          rune // escape character (default: '"')
-}
-
-func getCSVOpts(tbl *catalog.Table) CSVOptions {
-	opts := CSVOptions{
-		Delimiter: ',',
-		Quote:     '"',
-		Escape:    '"',
-	}
-	if d := tbl.Option("delimiter", ""); d != "" {
-		opts.Delimiter = []rune(d)[0]
-	}
-	if s := tbl.Option("skip_header_lines", ""); s != "" {
-		if n, err := strconv.Atoi(s); err == nil {
-			opts.SkipHeaderLines = n
-		}
-	}
-	if q := tbl.Option("quote_char", ""); q != "" {
-		opts.Quote = []rune(q)[0]
-	}
-	if e := tbl.Option("escape_char", ""); e != "" {
-		opts.Escape = []rune(e)[0]
-	}
-	return opts
-}
 
 func tempFilePattern(outputFile string) string {
 	if ext := filepath.Ext(outputFile); ext != "" {
@@ -51,8 +17,6 @@ func tempFilePattern(outputFile string) string {
 	}
 	return "append_*"
 }
-
-type Row map[string]string
 
 type TableReader interface {
 	ReadAll() ([]Row, error)
@@ -143,20 +107,20 @@ func readLocalTable(tbl *catalog.Table, filters []PartitionFilter) ([]Row, error
 	}
 
 	resultCh := make(chan fileResult, len(partitions))
-		csvOpts := getCSVOpts(tbl)
-		for _, pf := range partitions {
-			go func(pf partitionFile) {
-				var fileRows []Row
-				var readErr error
-				switch format {
-				case "csv":
-					fileRows, readErr = readCSV(pf.Path, tbl.Columns, csvOpts)
-				case "json":
-					fileRows, readErr = readJSON(pf.Path, tbl.Columns)
-				default:
-					resultCh <- fileResult{err: fmt.Errorf("unsupported format %q", format)}
-					return
-				}
+	csvOpts := serde.NewCSVOptions(tbl)
+	for _, pf := range partitions {
+		go func(pf partitionFile) {
+			var fileRows []Row
+			var readErr error
+			switch format {
+			case "csv":
+				fileRows, readErr = readCSV(pf.Path, tbl.Columns, csvOpts)
+			case "json":
+				fileRows, readErr = readJSON(pf.Path, tbl.Columns)
+			default:
+				resultCh <- fileResult{err: fmt.Errorf("unsupported format %q", format)}
+				return
+			}
 			if readErr != nil {
 				resultCh <- fileResult{err: readErr}
 				return
@@ -345,49 +309,14 @@ func resolveLocalPaths(location, pattern string) ([]string, error) {
 	return []string{location}, nil
 }
 
-func readCSV(path string, columns []catalog.ColumnDef, opts CSVOptions) ([]Row, error) {
+func readCSV(path string, columns []catalog.ColumnDef, opts serde.CSVOptions) ([]Row, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
 	defer file.Close()
 
-	reader := csv.NewReader(bufio.NewReader(file))
-	reader.Comma = opts.Delimiter
-	reader.LazyQuotes = true
-	reader.TrimLeadingSpace = true
-	reader.FieldsPerRecord = -1
-
-	// skip header lines
-	for i := 0; i < opts.SkipHeaderLines; i++ {
-		if _, err := reader.Read(); err != nil {
-			if err == io.EOF {
-				break
-			}
-			return nil, err
-		}
-	}
-
-	var rows []Row
-	for {
-		record, err := reader.Read()
-		if err != nil {
-			if err == io.EOF {
-				break
-			}
-			return nil, err
-		}
-		row := make(Row)
-		for i, col := range columns {
-			var value string
-			if i < len(record) {
-				value = record[i]
-			}
-			row[col.Name] = value
-		}
-		rows = append(rows, row)
-	}
-	return rows, nil
+	return serde.Decode(context.Background(), "csv", file, columns, opts)
 }
 
 func readJSON(path string, columns []catalog.ColumnDef) ([]Row, error) {
@@ -397,31 +326,7 @@ func readJSON(path string, columns []catalog.ColumnDef) ([]Row, error) {
 	}
 	defer file.Close()
 
-	var rows []Row
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" {
-			continue
-		}
-		rowMap := make(map[string]any)
-		if err := json.Unmarshal([]byte(line), &rowMap); err != nil {
-			return nil, err
-		}
-		row := make(Row)
-		for _, col := range columns {
-			if value, ok := rowMap[col.Name]; ok {
-				row[col.Name] = fmt.Sprint(value)
-			} else {
-				row[col.Name] = ""
-			}
-		}
-		rows = append(rows, row)
-	}
-	if err := scanner.Err(); err != nil {
-		return nil, err
-	}
-	return rows, nil
+	return serde.Decode(context.Background(), "json", file, columns, serde.CSVOptions{})
 }
 
 func WriteRows(tbl *catalog.Table, rows []Row, appendMode bool) error {
@@ -452,7 +357,7 @@ func writeLocalTable(tbl *catalog.Table, rows []Row, appendMode bool) error {
 	outputFile := tbl.Option("file_name", "result.csv")
 	format := strings.ToLower(tbl.Option("format", "csv"))
 
-	csvOpts := getCSVOpts(tbl)
+	csvOpts := serde.NewCSVOptions(tbl)
 
 	if len(tbl.PartitionBy) > 0 {
 		return writePartitionedTable(location, outputFile, format, tbl, rows, appendMode, csvOpts)
@@ -473,19 +378,18 @@ func writeLocalTable(tbl *catalog.Table, rows []Row, appendMode bool) error {
 
 	// Use atomic write: write to temp file, then rename
 	tmpPath := outputPath + ".tmp"
-	switch format {
-	case "csv":
-		if err := writeCSV(tmpPath, tbl.Columns, rows, csvOpts); err != nil {
-			os.Remove(tmpPath)
-			return err
-		}
-	case "json":
-		if err := writeJSON(tmpPath, rows); err != nil {
-			os.Remove(tmpPath)
-			return err
-		}
-	default:
-		return fmt.Errorf("unsupported write format %q", format)
+	file, err := os.Create(tmpPath)
+	if err != nil {
+		return err
+	}
+	if err := serde.Encode(context.Background(), format, rows, tbl.Columns, file, csvOpts); err != nil {
+		file.Close()
+		os.Remove(tmpPath)
+		return err
+	}
+	if err := file.Close(); err != nil {
+		os.Remove(tmpPath)
+		return err
 	}
 
 	if err := os.Rename(tmpPath, outputPath); err != nil {
@@ -495,7 +399,7 @@ func writeLocalTable(tbl *catalog.Table, rows []Row, appendMode bool) error {
 	return nil
 }
 
-func writePartitionedTable(location, outputFile, format string, tbl *catalog.Table, rows []Row, appendMode bool, csvOpts CSVOptions) error {
+func writePartitionedTable(location, outputFile, format string, tbl *catalog.Table, rows []Row, appendMode bool, csvOpts serde.CSVOptions) error {
 	partitionCols := tbl.PartitionBy
 
 	partitions := make(map[string][]Row)
@@ -528,62 +432,22 @@ func writePartitionedTable(location, outputFile, format string, tbl *catalog.Tab
 
 		// Atomic write: write to temp, then rename
 		tmpPath := outPath + ".tmp"
-		switch format {
-		case "csv":
-			if err := writeCSV(tmpPath, tbl.Columns, partRows, csvOpts); err != nil {
-				os.Remove(tmpPath)
-				return err
-			}
-		case "json":
-			if err := writeJSON(tmpPath, partRows); err != nil {
-				os.Remove(tmpPath)
-				return err
-			}
-		default:
-			return fmt.Errorf("unsupported write format %q", format)
+		file, err := os.Create(tmpPath)
+		if err != nil {
+			return err
+		}
+		if err := serde.Encode(context.Background(), format, partRows, tbl.Columns, file, csvOpts); err != nil {
+			file.Close()
+			os.Remove(tmpPath)
+			return err
+		}
+		if err := file.Close(); err != nil {
+			os.Remove(tmpPath)
+			return err
 		}
 		if err := os.Rename(tmpPath, outPath); err != nil {
 			os.Remove(tmpPath)
 			return fmt.Errorf("failed to rename temp file: %w", err)
-		}
-	}
-	return nil
-}
-
-func writeCSV(path string, columns []catalog.ColumnDef, rows []Row, opts CSVOptions) error {
-	file, err := os.Create(path)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-
-	writer := csv.NewWriter(file)
-	writer.Comma = opts.Delimiter
-	defer writer.Flush()
-
-	for _, row := range rows {
-		record := make([]string, len(columns))
-		for i, col := range columns {
-			record[i] = row[col.Name]
-		}
-		if err := writer.Write(record); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func writeJSON(path string, rows []Row) error {
-	file, err := os.Create(path)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-
-	encoder := json.NewEncoder(file)
-	for _, row := range rows {
-		if err := encoder.Encode(row); err != nil {
-			return err
 		}
 	}
 	return nil

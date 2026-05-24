@@ -1,13 +1,9 @@
 package storage
 
 import (
-	"bufio"
 	"bytes"
 	"context"
-	"encoding/csv"
-	"encoding/json"
 	"fmt"
-	"io"
 	"net/url"
 	"path"
 	"path/filepath"
@@ -18,6 +14,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/feature/s3/manager"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/ilibx/gsql/pkg/catalog"
+	"github.com/ilibx/gsql/pkg/serde"
 )
 
 // S3 storage option keys (without s3_ prefix)
@@ -133,11 +130,11 @@ func readS3Table(tbl *catalog.Table, filters []PartitionFilter) ([]Row, error) {
 
 			switch format {
 			case "csv":
-				csvOpts := getCSVOpts(tbl)
-				rows, err := readCSVFromReader(obj.Body, tbl.Columns, csvOpts)
+				csvOpts := serde.NewCSVOptions(tbl)
+				rows, err := serde.Decode(ctx, "csv", obj.Body, tbl.Columns, csvOpts)
 				resultCh <- fileResult{rows: rows, err: err}
 			case "json":
-				rows, err := readJSONFromReader(obj.Body, tbl.Columns)
+				rows, err := serde.Decode(ctx, "json", obj.Body, tbl.Columns, serde.CSVOptions{})
 				resultCh <- fileResult{rows: rows, err: err}
 			default:
 				resultCh <- fileResult{err: fmt.Errorf("unsupported format %q", format)}
@@ -195,7 +192,7 @@ func writeS3Table(tbl *catalog.Table, rows []Row, appendMode bool) error {
 
 	fileName := tbl.Option("file_name", "result.csv")
 	format := strings.ToLower(tbl.Option("format", "csv"))
-	csvOpts := getCSVOpts(tbl)
+	csvOpts := serde.NewCSVOptions(tbl)
 
 	if appendMode {
 		fileName = fmt.Sprintf("append_%d_%s", len(rows), fileName)
@@ -207,13 +204,13 @@ func writeS3Table(tbl *catalog.Table, rows []Row, appendMode bool) error {
 	switch format {
 	case "csv":
 		buf := &bytes.Buffer{}
-		if err := writeCSVToBuffer(buf, tbl.Columns, rows, csvOpts); err != nil {
+		if err := serde.Encode(ctx, "csv", rows, tbl.Columns, buf, csvOpts); err != nil {
 			return err
 		}
 		data = buf.Bytes()
 	case "json":
 		buf := &bytes.Buffer{}
-		if err := writeJSONToBuffer(buf, rows); err != nil {
+		if err := serde.Encode(ctx, "json", rows, tbl.Columns, buf, serde.CSVOptions{}); err != nil {
 			return err
 		}
 		data = buf.Bytes()
@@ -243,112 +240,4 @@ func matchPattern(name, pattern string) bool {
 	}
 	matched, err := filepath.Match(pattern, name)
 	return err == nil && matched
-}
-
-func readCSVFromReader(r io.Reader, columns []catalog.ColumnDef, opts CSVOptions) ([]Row, error) {
-	reader := csv.NewReader(r)
-	reader.Comma = opts.Delimiter
-	reader.LazyQuotes = true
-	reader.TrimLeadingSpace = true
-	reader.FieldsPerRecord = -1
-
-	// skip header lines
-	for i := 0; i < opts.SkipHeaderLines; i++ {
-		if _, err := reader.Read(); err != nil {
-			if err == io.EOF {
-				break
-			}
-			return nil, err
-		}
-	}
-
-	var rows []Row
-	for {
-		record, err := reader.Read()
-		if err != nil {
-			if err == io.EOF {
-				break
-			}
-			return nil, err
-		}
-		row := make(Row)
-		for i, col := range columns {
-			var value string
-			if i < len(record) {
-				value = record[i]
-			}
-			row[col.Name] = value
-		}
-		rows = append(rows, row)
-	}
-	return rows, nil
-}
-
-func readJSONFromReader(r io.Reader, columns []catalog.ColumnDef) ([]Row, error) {
-	scanner := bufio.NewScanner(r)
-	var rows []Row
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" {
-			continue
-		}
-		rowMap := make(map[string]any)
-		if err := json.Unmarshal([]byte(line), &rowMap); err != nil {
-			return nil, err
-		}
-		row := make(Row)
-		for _, col := range columns {
-			if value, ok := rowMap[col.Name]; ok {
-				row[col.Name] = fmt.Sprint(value)
-			} else {
-				row[col.Name] = ""
-			}
-		}
-		rows = append(rows, row)
-	}
-	if err := scanner.Err(); err != nil {
-		return nil, err
-	}
-	return rows, nil
-}
-
-func readCSVFromBytes(data []byte, columns []catalog.ColumnDef, opts CSVOptions) ([]Row, error) {
-	return readCSVFromReader(bytes.NewReader(data), columns, opts)
-}
-
-func readJSONFromBytes(data []byte, columns []catalog.ColumnDef) ([]Row, error) {
-	return readJSONFromReader(bytes.NewReader(data), columns)
-}
-
-func writeCSVToBuffer(buf io.Writer, columns []catalog.ColumnDef, rows []Row, opts CSVOptions) error {
-	writer := csv.NewWriter(buf)
-	writer.Comma = opts.Delimiter
-	defer writer.Flush()
-
-	for _, row := range rows {
-		record := make([]string, len(columns))
-		for i, col := range columns {
-			record[i] = row[col.Name]
-		}
-		if err := writer.Write(record); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func writeJSONToBuffer(buf io.Writer, rows []Row) error {
-	for _, row := range rows {
-		data, err := json.Marshal(row)
-		if err != nil {
-			return err
-		}
-		if _, err := buf.Write(data); err != nil {
-			return err
-		}
-		if _, err := buf.Write([]byte("\n")); err != nil {
-			return err
-		}
-	}
-	return nil
 }
