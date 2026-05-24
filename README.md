@@ -379,7 +379,9 @@ make test
 
 ## 存储适配器详情
 
-gsql 支持多种存储后端：
+gsql 支持多种存储后端，提供两种配置方式：
+
+### 1. 传统方式（带前缀配置）
 
 | 存储类型 | 说明 | 配置参数 |
 |---------|------|---------|
@@ -389,6 +391,55 @@ gsql 支持多种存储后端：
 | `sftp` | SFTP 服务器 | `sftp_host`, `sftp_port`, `sftp_user`, `sftp_pass`, `sftp_path` |
 | `webdav` | WebDAV 服务 | `webdav_url`, `webdav_user`, `webdav_pass`, `webdav_path` |
 | `git-lfs` / `gitlfs` | Git LFS 版本控制 | `git_lfs_repo` 或 `git_lfs_path` |
+
+### 2. URL 方式（推荐）
+
+通过 `url` 参数统一配置存储信息，自动推断 `storage` 类型：
+
+```sql
+CREATE TABLE table_name (
+  ...
+)
+WITH (
+  url = 'scheme://user:pass@host:port/path?query_params',  -- 自动推断 storage 类型
+  format = 'csv'
+);
+```
+
+### URL 协议格式
+
+通过统一的 URL 格式配置存储信息，自动推断 `storage` 类型和参数：
+| 协议       | 格式示例                                                                 | 说明                                                                                     |
+|------------|--------------------------------------------------------------------------|------------------------------------------------------------------------------------------|
+| `local://` | `local:///data/path`                                                     | 本地文件系统，路径为绝对路径                                                             |
+| `ftp://`   | `ftp://user:pass@ftp.example.com:21/data`                                | FTP 服务器，支持用户名密码和端口                                                         |
+| `sftp://`  | `sftp://user:pass@sftp.example.com/data`                                 | SFTP 服务器，默认端口 22                                                                |
+| `s3://`    | `s3://bucket/path?region=us-east-1&endpoint=s3.example.com`              | S3 或兼容服务（如 MinIO），支持 region 和 endpoint 参数                                |
+| `hdfs://`  | `hdfs://namenode:8020/data`                                              | HDFS 文件系统，支持指定 namenode 和端口                                                 |
+| `webdav://`| `webdav://user:pass@webdav.example.com/data`                             | WebDAV 服务，支持用户名密码                                                             |
+| `git://`   | `git:///path/to/repo` 或 `git://user:pass@git.example.com/repo.git`      | Git 仓库（支持 Git LFS），可以是本地路径或远程仓库 URL
+
+### 参数优先级
+
+1. 显式配置的参数（如 `username`、`password`）优先级最高
+2. URL 中的参数（如 `ftp://user:pass@host`）次之
+3. 默认值（如 FTP 默认端口 21）优先级最低
+
+### 3. 混合方式
+
+可以同时使用 `url` 和带前缀的配置，带前缀的配置会覆盖 `url` 中的对应参数：
+
+```sql
+CREATE TABLE ftp_data (
+  ...
+)
+WITH (
+  url = 'ftp://ftp.example.com/data',  -- 自动推断 storage=ftp
+  ftp_user = 'custom_user',            -- 覆盖 URL 中的用户名
+  ftp_pass = 'custom_pass',            -- 覆盖 URL 中的密码
+  format = 'csv'
+);
+```
 
 ## 未来扩展方向
 

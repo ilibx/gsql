@@ -52,18 +52,44 @@ func parseRemoteURL(rawURL string, defaultPort string) (host, port, path string,
 
 // readFTPTable reads data from FTP
 func readFTPTable(tbl *catalog.Table, filters []PartitionFilter) ([]Row, error) {
+	// Try to get URL from either 'url' or individual parameters
 	rawURL := tbl.Option(urlKey, "")
-	if rawURL == "" {
-		return nil, fmt.Errorf("missing url for table %s", tbl.Name)
+	host := tbl.Option("host", "")
+	port := tbl.Option("port", "21")
+	path := tbl.Option("path", "")
+	user := tbl.Option("username", "")
+	pass := tbl.Option("password", "")
+
+	// If URL is provided, parse it to get host, port, path, user, pass
+	if rawURL != "" {
+		parsedHost, parsedPort, parsedPath, err := parseRemoteURL(rawURL, "21")
+		if err != nil {
+			return nil, err
+		}
+		// Override individual parameters with URL values
+		if host == "" {
+			host = parsedHost
+		}
+		if port == "21" {
+			port = parsedPort
+		}
+		if path == "" {
+			path = parsedPath
+		}
+		// Parse user and pass from URL if not provided
+		if u, err := url.Parse(rawURL); err == nil && u.User != nil {
+			if user == "" {
+				user = u.User.Username()
+			}
+			if pass == "" {
+				pass, _ = u.User.Password()
+			}
+		}
 	}
 
-	host, port, path, err := parseRemoteURL(rawURL, "21")
-	if err != nil {
-		return nil, err
+	if host == "" {
+		return nil, fmt.Errorf("missing host for FTP table %s", tbl.Name)
 	}
-
-	user := tbl.Option(userKey, "")
-	pass := tbl.Option(passKey, "")
 	pattern := tbl.Option("file_pattern", "*")
 	format := strings.ToLower(tbl.Option("format", ""))
 	csvOpts := serde.NewCSVOptions(tbl)
@@ -182,18 +208,44 @@ func readFTPTable(tbl *catalog.Table, filters []PartitionFilter) ([]Row, error) 
 
 // readSFTPTable reads data from SFTP
 func readSFTPTable(tbl *catalog.Table, filters []PartitionFilter) ([]Row, error) {
+	// Try to get URL from either 'url' or individual parameters
 	rawURL := tbl.Option(urlKey, "")
-	if rawURL == "" {
-		return nil, fmt.Errorf("missing url for table %s", tbl.Name)
+	host := tbl.Option("host", "")
+	port := tbl.Option("port", "22")
+	path := tbl.Option("path", "")
+	user := tbl.Option("username", "")
+	pass := tbl.Option("password", "")
+
+	// If URL is provided, parse it to get host, port, path, user, pass
+	if rawURL != "" {
+		parsedHost, parsedPort, parsedPath, err := parseRemoteURL(rawURL, "22")
+		if err != nil {
+			return nil, err
+		}
+		// Override individual parameters with URL values
+		if host == "" {
+			host = parsedHost
+		}
+		if port == "22" {
+			port = parsedPort
+		}
+		if path == "" {
+			path = parsedPath
+		}
+		// Parse user and pass from URL if not provided
+		if u, err := url.Parse(rawURL); err == nil && u.User != nil {
+			if user == "" {
+				user = u.User.Username()
+			}
+			if pass == "" {
+				pass, _ = u.User.Password()
+			}
+		}
 	}
 
-	host, port, path, err := parseRemoteURL(rawURL, "22")
-	if err != nil {
-		return nil, err
+	if host == "" {
+		return nil, fmt.Errorf("missing host for SFTP table %s", tbl.Name)
 	}
-
-	user := tbl.Option(userKey, "")
-	pass := tbl.Option(passKey, "")
 	pattern := tbl.Option("file_pattern", "*")
 	format := strings.ToLower(tbl.Option("format", ""))
 	csvOpts := serde.NewCSVOptions(tbl)
@@ -308,14 +360,41 @@ func readSFTPTable(tbl *catalog.Table, filters []PartitionFilter) ([]Row, error)
 
 // readWebDAVTable reads data from WebDAV
 func readWebDAVTable(tbl *catalog.Table, filters []PartitionFilter) ([]Row, error) {
+	// Try to get URL from either 'url' or individual parameters
 	rawURL := tbl.Option(urlKey, "")
-	if rawURL == "" {
-		return nil, fmt.Errorf("missing url for table %s", tbl.Name)
+	webdavURL := tbl.Option("url", "")
+	user := tbl.Option("username", "")
+	pass := tbl.Option("password", "")
+	path := tbl.Option("path", "")
+
+	// If URL is provided, parse it to get webdav_url, user, pass, path
+	if rawURL != "" {
+		if u, err := url.Parse(rawURL); err == nil {
+			// Override individual parameters with URL values
+			if webdavURL == "" {
+				webdavURL = fmt.Sprintf("%s://%s%s", u.Scheme, u.Host, u.Path)
+			}
+			if path == "" {
+				path = u.Path
+			}
+			// Parse user and pass from URL if not provided
+			if u.User != nil {
+				if user == "" {
+					user = u.User.Username()
+				}
+				if pass == "" {
+					pass, _ = u.User.Password()
+				}
+			}
+		}
 	}
 
-	user := tbl.Option(userKey, "")
-	pass := tbl.Option(passKey, "")
-	path := tbl.Option(pathKey, "")
+	if webdavURL == "" {
+		webdavURL = rawURL
+	}
+	if webdavURL == "" {
+		return nil, fmt.Errorf("missing url for WebDAV table %s", tbl.Name)
+	}
 	pattern := tbl.Option("file_pattern", "*")
 	format := strings.ToLower(tbl.Option("format", ""))
 	csvOpts := serde.NewCSVOptions(tbl)
@@ -324,7 +403,7 @@ func readWebDAVTable(tbl *catalog.Table, filters []PartitionFilter) ([]Row, erro
 		return nil, fmt.Errorf("missing format for table %s", tbl.Name)
 	}
 
-	client := gowebdav.NewClient(rawURL, user, pass)
+	client := gowebdav.NewClient(webdavURL, user, pass)
 
 	entries, err := client.ReadDir(path)
 	if err != nil {

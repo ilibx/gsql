@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -60,9 +61,19 @@ func ReadTableRows(tbl *catalog.Table, filters ...PartitionFilter) ([]Row, error
 }
 
 func readLocalTable(tbl *catalog.Table, filters []PartitionFilter) ([]Row, error) {
+	// Try to get location from either 'location' or URL
 	location := tbl.Option("location", "")
 	if location == "" {
-		return nil, fmt.Errorf("missing location for table %s", tbl.Name)
+		// Check if URL is provided
+		rawURL := tbl.Option("url", "")
+		if rawURL != "" {
+			if parsed, err := url.Parse(rawURL); err == nil && parsed.Scheme == "local" {
+				location = parsed.Path
+			}
+		}
+		if location == "" {
+			return nil, fmt.Errorf("missing location for table %s", tbl.Name)
+		}
 	}
 
 	format := strings.ToLower(tbl.Option("format", ""))

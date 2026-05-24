@@ -31,8 +31,19 @@ type lfsPointer struct {
 
 // readGitLFSTable reads data from Git LFS
 func readGitLFSTable(tbl *catalog.Table, filters []PartitionFilter) ([]Row, error) {
+	// Try to get path from either 'path'/'repo' or individual parameters
 	repoPath := tbl.Option(gitLFSRepoKey, "")
 	lfsPath := tbl.Option(gitLFSPathKey, "")
+	path := tbl.Option("path", "")
+	repo := tbl.Option("repo", "")
+
+	// Override individual parameters with path/repo values
+	if path != "" {
+		lfsPath = path
+	}
+	if repo != "" {
+		repoPath = repo
+	}
 
 	if repoPath == "" && lfsPath == "" {
 		return nil, fmt.Errorf("missing git_lfs_repo or git_lfs_path for table %s", tbl.Name)

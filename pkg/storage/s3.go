@@ -44,14 +44,28 @@ func parseS3URL(rawURL string) (bucket, prefix string, err error) {
 
 // readS3Table reads data from S3
 func readS3Table(tbl *catalog.Table, filters []PartitionFilter) ([]Row, error) {
+	// Try to get URL from either 'url' or individual parameters
 	rawURL := tbl.Option(s3URLKey, "")
-	if rawURL == "" {
-		return nil, fmt.Errorf("missing url for table %s", tbl.Name)
+	bucket := tbl.Option("bucket", "")
+	prefix := tbl.Option("prefix", "")
+
+	// If URL is provided, parse it to get bucket and prefix
+	if rawURL != "" {
+		parsedBucket, parsedPrefix, err := parseS3URL(rawURL)
+		if err != nil {
+			return nil, err
+		}
+		// Override individual parameters with URL values
+		if bucket == "" {
+			bucket = parsedBucket
+		}
+		if prefix == "" {
+			prefix = parsedPrefix
+		}
 	}
 
-	bucket, prefix, err := parseS3URL(rawURL)
-	if err != nil {
-		return nil, err
+	if bucket == "" {
+		return nil, fmt.Errorf("missing bucket for S3 table %s", tbl.Name)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), s3Timeout)
