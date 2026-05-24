@@ -10,6 +10,7 @@ gsql 是一个基于 Go 的轻量级 Hive 风格 SQL 查询引擎原型。当前
 - `INSERT OVERWRITE TABLE` 将查询结果写回目标表
 - 支持本地 `CSV` 与 `JSON` 数据源
 - 查询引擎自动将 SQL 转换为执行计划，并对过滤与投影阶段进行并行执行
+- 支持 `EXPLAIN` 命令查看逻辑计划、优化后逻辑计划和物理执行计划
 - 本地文件读取支持多文件并发加载
 
 ## 架构概览
@@ -62,6 +63,7 @@ gsql 拥有以下核心层次：
   - `Git LFS` 版本控制大文件访问
 - 表别名支持（`FROM users u`、`JOIN orders o`）
 - 列别名支持（`COUNT(*) AS cnt`、`ORDER BY cnt`）
+- `EXPLAIN` 命令查看逻辑计划、优化后逻辑计划与物理执行计划
 
 ## 使用示例
 
@@ -112,7 +114,11 @@ WITH (
 PARTITIONED BY (dt);
 ```
 
-写入时自动按 `dt` 值分组写入子目录，如 `dt=2024-01-01/data.csv`。
+写入时自动按 `dt` 值分组写入子目录，默认使用 `col=value` 格式（如 `dt=2024-01-01/data.csv`）。
+
+可通过 `partition_format` 选项控制目录格式：
+- `partition_format = 'col=value'`（默认）：使用 `col=value` 格式目录
+- `partition_format = 'value'`：仅使用值作为目录名（如 `2024-01-01/data.csv`）
 
 ### Hive 风格分区（读取）
 
@@ -140,21 +146,40 @@ samples/orders/2026/
 两种格式自动检测——如果第一级子目录不含 `col=` 前缀则视为裸值格式。
 
 ```sql
-CREATE TABLE partitioned_orders (
-  order_id INT,
-  user_id INT,
-  product_id INT,
-  quantity INT,
-  amount INT,
-  order_date STRING
+-- 默认格式：col=value 目录（如 year=2026/summary.csv）
+CREATE TABLE monthly_summary (
+  month STRING,
+  order_count INT,
+  total_amount INT
 )
 WITH (
   storage = 'local',
   format = 'csv',
-  location = 'samples/orders',
-  file_pattern = 'data.csv'
+  location = 'samples/result/monthly',
+  file_name = 'summary.csv'
 )
-PARTITIONED BY (year, month);
+PARTITIONED BY (year);
+
+-- 裸值格式：仅使用值作为目录（如 2026/summary.csv）
+CREATE TABLE monthly_summary_bare (
+  month STRING,
+  order_count INT,
+  total_amount INT
+)
+WITH (
+  storage = 'local',
+  format = 'csv',
+  location = 'samples/result/monthly_bare',
+  file_name = 'summary.csv',
+  partition_format = 'value'
+)
+PARTITIONED BY (year);
+
+-- 写入数据
+INSERT OVERWRITE TABLE monthly_summary_bare
+SELECT month, COUNT(*) AS order_count, SUM(amount) AS total_amount, year
+FROM partitioned_orders
+GROUP BY month, year;
 ```
 
 查询时支持 **分区列自动注入**——`year` 和 `month` 值从目录路径提取并附加到每行数据：
@@ -290,6 +315,46 @@ WITH (
 - `Limit`：截取结果行数
 - `Project`：并行投影所需列
 
+使用者可以通过 `EXPLAIN` 命令查看查询的执行计划：
+
+```sql
+EXPLAIN SELECT name, age + 1 AS next_age, email
+FROM users
+WHERE age + 5 > 25
+ORDER BY next_age
+LIMIT 5;
+```
+
+输出包含三层计划：
+- **Logical Plan** — 优化前的逻辑计划，反映 SQL 语义结构
+- **Optimized Logical Plan** — 经过列裁剪等优化后的逻辑计划
+- **Physical Plan** — 最终物理执行计划，展示实际执行的算子
+
+```text
+=== Logical Plan ===
+LogicalLimit(5)
+  LogicalSort((age + 1))
+    LogicalProject(name, (age + 1), email)
+      LogicalFilter(WHERE (age + 5) > 25)
+        LogicalScan(users)
+
+=== Optimized Logical Plan ===
+LogicalLimit(5)
+  LogicalSort((age + 1))
+    LogicalProject(name, (age + 1), email)
+      LogicalFilter(WHERE (age + 5) > 25)
+        LogicalProject((age + 1), (age + 5), age, email, name)
+          LogicalScan(users)
+
+=== Physical Plan ===
+Limit(5)
+  Sort((age + 1))
+    Project(name, (age + 1), email)
+      Filter((age + 5) > 25)
+        Project((age + 1), (age + 5), age, email, name)
+          TableScan(table=users)
+```
+
 同时，本地文件读取使用并发方式加载多个文件，提升数据扫描效率。
 
 ## 运行测试
@@ -318,7 +383,7 @@ gsql 支持多种存储后端：
 
 | 存储类型 | 说明 | 配置参数 |
 |---------|------|---------|
-| `local` | 本地文件系统（支持分区表目录结构自动检测） | `location`, `file_pattern`, `file_name` |
+| `local` | 本地文件系统（支持分区表目录结构自动检测） | `location`, `file_pattern`, `file_name`, `partition_format` |
 | `s3` | AWS S3 或 S3兼容服务 | `s3_bucket`, `s3_region`, `s3_prefix`, `s3_endpoint`(可选) |
 | `ftp` | FTP 服务器 | `ftp_host`, `ftp_port`, `ftp_user`, `ftp_pass`, `ftp_path` |
 | `sftp` | SFTP 服务器 | `sftp_host`, `sftp_port`, `sftp_user`, `sftp_pass`, `sftp_path` |

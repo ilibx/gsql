@@ -36,6 +36,8 @@ func (e *Engine) Execute(stmt parser.Statement) error {
 		}
 		printRows(rows)
 		return nil
+	case *parser.ExplainStmt:
+		return e.executeExplain(node.Query)
 	default:
 		return fmt.Errorf("unsupported statement type: %T", node)
 	}
@@ -83,10 +85,18 @@ func (e *Engine) executeInsertOverwrite(stmt *parser.InsertOverwriteStmt) error 
 		}
 		targetCols = append(targetCols, target.PartitionBy...)
 
+		aliases := make(map[string]string)
+		for alias, orig := range stmt.Query.ColumnAliases {
+			aliases[stripTableAlias(orig)] = alias
+		}
+
 		for ri, row := range rows {
 			nr := make(storage.Row)
 			for i, origCol := range stmt.Query.Columns {
 				stripped := stripTableAlias(origCol)
+				if resolved, ok := aliases[stripped]; ok {
+					stripped = resolved
+				}
 				if i < len(targetCols) {
 					nr[targetCols[i]] = row[stripped]
 				}
@@ -105,6 +115,54 @@ func (e *Engine) executeInsertOverwrite(stmt *parser.InsertOverwriteStmt) error 
 		}
 		fmt.Printf("-- %s %d rows to table %s\n", action, len(rows), stmt.TableName)
 	}
+	return nil
+}
+
+func (e *Engine) executeExplain(query *parser.SelectQuery) error {
+	cteTables := make(map[string][]storage.Row)
+
+	for _, cte := range query.CTEs {
+		rows, err := e.executeSelectWithCTEs(cte.Query, cteTables)
+		if err != nil {
+			return err
+		}
+		cteTables[strings.ToLower(cte.Name)] = cloneRows(rows)
+	}
+
+	if query.FromSubquery != nil {
+		rows, err := e.executeSelectWithCTEs(query.FromSubquery, cteTables)
+		if err != nil {
+			return err
+		}
+		if query.FromAlias != "" {
+			cteTables[strings.ToLower(query.FromAlias)] = cloneRows(rows)
+		}
+	}
+
+	logical, err := e.buildLogicalPlan(query, cteTables)
+	if err != nil {
+		return err
+	}
+
+	optimized := plan.CatalogOptimizer(e.catalog).OptimizeWithPruning(logical)
+
+	physCtx := &plan.PhysicalPlanContext{
+		Catalog: e.catalog,
+		CTEData: cteTables,
+	}
+	root, err := plan.LogicalToPhysical(optimized, physCtx)
+	if err != nil {
+		return err
+	}
+
+	fmt.Println("=== Logical Plan ===")
+	fmt.Println(plan.ExplainLogical(logical, 0))
+	fmt.Println()
+	fmt.Println("=== Optimized Logical Plan ===")
+	fmt.Println(plan.ExplainLogical(optimized, 0))
+	fmt.Println()
+	fmt.Println("=== Physical Plan ===")
+	fmt.Println(root.Explain(0))
 	return nil
 }
 
@@ -194,8 +252,8 @@ func (e *Engine) buildLogicalPlan(sel *parser.SelectQuery, cteTables map[string]
 		return nil, err
 	}
 	root = e.addWindowFunctions(root, sel)
-	root = e.addSortAndLimit(root, sel)
 	root = e.addProjection(root, sel)
+	root = e.addSortAndLimit(root, sel)
 	return root, nil
 }
 
@@ -238,20 +296,33 @@ func (e *Engine) addFiltersAndGrouping(root plan.LogicalNode, sel *parser.Select
 		groupBy[i] = stripTableAlias(col)
 	}
 
-	if len(groupBy) > 0 || len(sel.Aggregates) > 0 {
-		aggDefs := make([]plan.AggregateDef, len(sel.Aggregates))
-		for i, agg := range sel.Aggregates {
-			aggDefs[i] = plan.AggregateDef{FuncName: agg.FuncName, Column: stripTableAlias(agg.Column), Distinct: agg.Distinct}
+	if len(groupBy) > 0 || hasRealAggregates(sel.Aggregates) {
+		aggDefs := make([]plan.AggregateDef, 0, len(sel.Aggregates))
+		for _, agg := range sel.Aggregates {
+			if agg.FuncName != "" {
+				aggDefs = append(aggDefs, plan.AggregateDef{FuncName: agg.FuncName, Column: stripTableAlias(agg.Column), Distinct: agg.Distinct})
+			}
 		}
-		root = plan.NewLogicalAggregate(root, groupBy, aggDefs)
+		if len(groupBy) > 0 || len(aggDefs) > 0 {
+			root = plan.NewLogicalAggregate(root, groupBy, aggDefs)
+		}
 	}
 
 	having := sel.Having
 	if having != nil {
-		having = stripExprAliases(having)
+		having = stripExprAliasesWithMap(having, sel.ColumnAliases)
 		root = plan.NewLogicalFilter(root, having)
 	}
 	return root
+}
+
+func hasRealAggregates(aggs []parser.AggregateExpr) bool {
+	for _, a := range aggs {
+		if a.FuncName != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func (e *Engine) validateGroupByColumns(sel *parser.SelectQuery) error {
@@ -279,8 +350,15 @@ func (e *Engine) validateGroupByColumns(sel *parser.SelectQuery) error {
 }
 
 func (e *Engine) addWindowFunctions(root plan.LogicalNode, sel *parser.SelectQuery) plan.LogicalNode {
-	windowExprs := make([]parser.WindowExpr, len(sel.WindowExprs))
-	for i, w := range sel.WindowExprs {
+	windowExprs := make([]parser.WindowExpr, 0, len(sel.WindowExprs))
+	for _, w := range sel.WindowExprs {
+		if w.FuncName == "" && len(w.Args) == 0 {
+			continue
+		}
+		args := make([]string, len(w.Args))
+		for j, a := range w.Args {
+			args[j] = stripTableAlias(a)
+		}
 		partBy := make([]string, len(w.PartitionBy))
 		for j, p := range w.PartitionBy {
 			partBy[j] = stripTableAlias(p)
@@ -289,14 +367,17 @@ func (e *Engine) addWindowFunctions(root plan.LogicalNode, sel *parser.SelectQue
 		for j, o := range w.OrderBy {
 			ob[j] = parser.SortOrder{Column: stripTableAlias(o.Column), Desc: o.Desc}
 		}
-		windowExprs[i] = parser.WindowExpr{
+		windowExprs = append(windowExprs, parser.WindowExpr{
 			FuncName:    w.FuncName,
-			Args:        w.Args,
+			Args:        args,
 			PartitionBy: partBy,
 			OrderBy:     ob,
-		}
+		})
 	}
-	return plan.NewLogicalWindow(root, windowExprs)
+	if len(windowExprs) > 0 {
+		return plan.NewLogicalWindow(root, windowExprs)
+	}
+	return root
 }
 
 func (e *Engine) addSortAndLimit(root plan.LogicalNode, sel *parser.SelectQuery) plan.LogicalNode {
@@ -331,7 +412,8 @@ func (e *Engine) addProjection(root plan.LogicalNode, sel *parser.SelectQuery) p
 			}
 			continue
 		}
-		columns = append(columns, stripTableAlias(col))
+		stripped := stripTableAlias(col)
+		columns = append(columns, stripped)
 		if i < len(sel.ColumnExprs) {
 			columnExprs = append(columnExprs, sel.ColumnExprs[i])
 		} else {
@@ -500,21 +582,39 @@ func (e *Engine) resolveExprSubqueries(expr parser.Expression, cteTables map[str
 }
 
 func stripExprAliases(expr parser.Expression) parser.Expression {
+	return stripExprAliasesWithMap(expr, nil)
+}
+
+func stripExprAliasesWithMap(expr parser.Expression, aliases map[string]string) parser.Expression {
 	if expr == nil {
 		return nil
 	}
 	switch v := expr.(type) {
 	case *parser.ComparisonExpr:
+		col := stripTableAlias(v.Column)
+		if aliases != nil {
+			if resolved, ok := aliases[col]; ok {
+				col = resolved
+			}
+		}
+		rightCol := stripTableAlias(v.RightColumn)
+		if aliases != nil {
+			if resolved, ok := aliases[rightCol]; ok {
+				rightCol = resolved
+			}
+		}
 		return &parser.ComparisonExpr{
-			Column:   stripTableAlias(v.Column),
-			Operator: v.Operator,
-			Value:    v.Value,
+			Column:      col,
+			Operator:    v.Operator,
+			Value:       v.Value,
+			RightColumn: rightCol,
+			Expr:        v.Expr,
 		}
 	case *parser.LogicalExpr:
 		return &parser.LogicalExpr{
-			Left:     stripExprAliases(v.Left),
+			Left:     stripExprAliasesWithMap(v.Left, aliases),
 			Operator: v.Operator,
-			Right:    stripExprAliases(v.Right),
+			Right:    stripExprAliasesWithMap(v.Right, aliases),
 		}
 	}
 	return expr

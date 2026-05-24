@@ -141,7 +141,15 @@ func projectRowsWithExprs(rows []storage.Row, columns []string, exprs []parser.E
 
 func (n *ProjectNode) Explain(indent int) string {
 	prefix := strings.Repeat("  ", indent)
-	return fmt.Sprintf("%sProject(%s)\n%s", prefix, strings.Join(n.Columns, ", "), n.Child.Explain(indent+1))
+	parts := make([]string, 0, len(n.Columns))
+	for i, c := range n.Columns {
+		if c == "" && i < len(n.Exprs) && n.Exprs[i] != nil {
+			parts = append(parts, expressionToString(n.Exprs[i]))
+		} else if c != "" {
+			parts = append(parts, c)
+		}
+	}
+	return fmt.Sprintf("%sProject(%s)\n%s", prefix, strings.Join(parts, ", "), n.Child.Explain(indent+1))
 }
 
 type WindowNode struct {
@@ -643,7 +651,9 @@ func evaluateExpression(row storage.Row, expr parser.Expression) bool {
 	switch v := expr.(type) {
 	case *parser.ComparisonExpr:
 		var left string
-		if v.Column == "" {
+		if v.Expr != nil {
+			left = evaluateExpressionValue(row, v.Expr)
+		} else if v.Column == "" {
 			left = v.Value
 		} else {
 			left = row[v.Column]
@@ -720,6 +730,9 @@ func evaluateExpressionValue(row storage.Row, expr parser.Expression) string {
 	case *parser.ColumnRef:
 		return row[v.Name]
 	case *parser.ComparisonExpr:
+		if v.Expr != nil {
+			return evaluateExpressionValue(row, v.Expr)
+		}
 		if v.RightColumn != "" {
 			return row[v.RightColumn]
 		}
@@ -1019,6 +1032,9 @@ func LogicalToPhysical(node LogicalNode, ctx *PhysicalPlanContext) (PlanNode, er
 func expressionToString(expr parser.Expression) string {
 	switch v := expr.(type) {
 	case *parser.ComparisonExpr:
+		if v.Expr != nil {
+			return fmt.Sprintf("%s %s %s", expressionToString(v.Expr), v.Operator, v.Value)
+		}
 		if v.RightColumn != "" {
 			return fmt.Sprintf("%s %s %s", v.Column, v.Operator, v.RightColumn)
 		}
@@ -1040,6 +1056,8 @@ func expressionToString(expr parser.Expression) string {
 		return fmt.Sprintf("(%s %s %s)", expressionToString(v.Left), v.Operator, expressionToString(v.Right))
 	case *parser.ColumnRef:
 		return v.Name
+	case *parser.LiteralExpr:
+		return v.Value
 	default:
 		return "unknown"
 	}

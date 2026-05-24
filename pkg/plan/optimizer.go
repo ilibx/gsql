@@ -182,41 +182,55 @@ func collectColumnRefs(node LogicalNode, cols map[string]bool) {
 		collectExprCols(n.Predicate, cols)
 	case *LogicalProject:
 		for _, c := range n.Columns {
-			cols[c] = true
+			if c != "" {
+				cols[c] = true
+			}
 		}
 		for _, e := range n.Exprs {
 			collectExprCols(e, cols)
 		}
 	case *LogicalSort:
 		for _, o := range n.OrderBy {
-			cols[o.Column] = true
+			if o.Column != "" {
+				cols[o.Column] = true
+			}
 		}
 	case *LogicalWindow:
 		for _, w := range n.WindowExprs {
 			for _, a := range w.Args {
-				if a != "*" {
+				if a != "*" && a != "" {
 					cols[a] = true
 				}
 			}
 			for _, p := range w.PartitionBy {
-				cols[p] = true
+				if p != "" {
+					cols[p] = true
+				}
 			}
 			for _, o := range w.OrderBy {
-				cols[o.Column] = true
+				if o.Column != "" {
+					cols[o.Column] = true
+				}
 			}
 		}
 	case *LogicalAggregate:
 		for _, g := range n.GroupBy {
-			cols[g] = true
+			if g != "" {
+				cols[g] = true
+			}
 		}
 		for _, a := range n.Aggregates {
-			if a.Column != "*" {
+			if a.Column != "" && a.Column != "*" {
 				cols[a.Column] = true
 			}
 		}
 	case *LogicalJoin:
-		cols[n.LeftColumn] = true
-		cols[n.RightColumn] = true
+		if n.LeftColumn != "" {
+			cols[n.LeftColumn] = true
+		}
+		if n.RightColumn != "" {
+			cols[n.RightColumn] = true
+		}
 	}
 	for _, child := range node.Children() {
 		collectColumnRefs(child, cols)
@@ -229,7 +243,9 @@ func collectExprCols(expr parser.Expression, cols map[string]bool) {
 	}
 	switch v := expr.(type) {
 	case *parser.ComparisonExpr:
-		cols[v.Column] = true
+		if v.Column != "" {
+			cols[v.Column] = true
+		}
 		if v.RightColumn != "" {
 			cols[v.RightColumn] = true
 		}
@@ -237,9 +253,13 @@ func collectExprCols(expr parser.Expression, cols map[string]bool) {
 		collectExprCols(v.Left, cols)
 		collectExprCols(v.Right, cols)
 	case *parser.NullTestExpr:
-		cols[v.Column] = true
+		if v.Column != "" {
+			cols[v.Column] = true
+		}
 	case *parser.InExpr:
-		cols[v.Column] = true
+		if v.Column != "" {
+			cols[v.Column] = true
+		}
 	case *parser.BinaryExpr:
 		collectExprCols(v.Left, cols)
 		collectExprCols(v.Right, cols)

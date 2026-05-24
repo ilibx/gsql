@@ -46,6 +46,14 @@ func (s *SelectStmt) StatementName() string {
 	return "SELECT"
 }
 
+type ExplainStmt struct {
+	Query *SelectQuery
+}
+
+func (e *ExplainStmt) StatementName() string {
+	return "EXPLAIN"
+}
+
 type Expression interface {
 	expressionNode()
 }
@@ -55,6 +63,7 @@ type ComparisonExpr struct {
 	Operator    string
 	Value       string
 	RightColumn string // set for column-to-column comparisons (WHERE a = b)
+	Expr        Expression // set for computed expressions (WHERE age + 5 > 25)
 }
 
 func (e *ComparisonExpr) expressionNode() {}

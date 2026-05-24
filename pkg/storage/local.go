@@ -77,9 +77,10 @@ func readLocalTable(tbl *catalog.Table, filters []PartitionFilter) ([]Row, error
 
 	var partitions []partitionFile
 	var err error
-	isPartitioned := len(tbl.PartitionBy) > 0
-	if isPartitioned {
-		partitions, err = resolvePartitionPaths(location, pattern, tbl.PartitionBy, filters)
+		isPartitioned := len(tbl.PartitionBy) > 0
+		if isPartitioned {
+			bareFormat := tbl.Option("partition_format", "") == "value"
+			partitions, err = resolvePartitionPaths(location, pattern, tbl.PartitionBy, filters, bareFormat)
 		if err != nil {
 			return nil, err
 		}
@@ -147,33 +148,36 @@ func readLocalTable(tbl *catalog.Table, filters []PartitionFilter) ([]Row, error
 	return rows, nil
 }
 
-func resolvePartitionPaths(location, pattern string, partitionCols []string, filters []PartitionFilter) ([]partitionFile, error) {
+func resolvePartitionPaths(location, pattern string, partitionCols []string, filters []PartitionFilter, bareFormatOpt bool) ([]partitionFile, error) {
 	filterMap := make(map[string][]partitionFilterCond)
 	for _, f := range filters {
 		filterMap[f.Column] = append(filterMap[f.Column], partitionFilterCond{Operator: f.Operator, Value: f.Value})
 	}
 
-	// Auto-detect partition format: check if first partition level uses col=value or bare directories
-	useBareFormat := false
-	if firstEntries, err := os.ReadDir(location); err == nil && len(partitionCols) > 0 {
-		hasColEq := false
-		hasBareDir := false
-		prefix := partitionCols[0] + "="
-		for _, e := range firstEntries {
-			if !e.IsDir() {
-				continue
-			}
-			if strings.HasPrefix(e.Name(), prefix) {
-				hasColEq = true
-			} else {
-				hasBareDir = true
-			}
-		}
-		// Only use bare format if there are no col=value dirs
-		useBareFormat = !hasColEq && hasBareDir
-	}
+    // Auto-detect partition format: check if first partition level uses col=value or bare directories
+    // If partition_format option is explicitly set, use that; otherwise auto-detect.
+    useBareFormat := bareFormatOpt
+    if !useBareFormat {
+        if firstEntries, err := os.ReadDir(location); err == nil && len(partitionCols) > 0 {
+            hasColEq := false
+            hasBareDir := false
+            prefix := partitionCols[0] + "="
+            for _, e := range firstEntries {
+                if !e.IsDir() {
+                    continue
+                }
+                if strings.HasPrefix(e.Name(), prefix) {
+                    hasColEq = true
+                } else {
+                    hasBareDir = true
+                }
+            }
+            // Only use bare format if there are no col=value dirs
+            useBareFormat = !hasColEq && hasBareDir
+        }
+    }
 
-	dirs := []string{location}
+    dirs := []string{location}
 	for _, col := range partitionCols {
 		var next []string
 		for _, dir := range dirs {
@@ -424,10 +428,16 @@ func writePartitionedTable(location, outputFile, format string, tbl *catalog.Tab
 
 	partitions := make(map[string][]Row)
 
+	barePartition := tbl.Option("partition_format", "") == "value"
+
 	for _, row := range rows {
 		var kvPairs []string
 		for _, pc := range partitionCols {
-			kvPairs = append(kvPairs, fmt.Sprintf("%s=%s", pc, row[pc]))
+			if barePartition {
+				kvPairs = append(kvPairs, fmt.Sprintf("%s", row[pc]))
+			} else {
+				kvPairs = append(kvPairs, fmt.Sprintf("%s=%s", pc, row[pc]))
+			}
 		}
 		key := strings.Join(kvPairs, "/")
 		partitions[key] = append(partitions[key], row)

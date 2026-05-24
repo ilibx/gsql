@@ -84,6 +84,7 @@ const (
 	END_KW
 	EXISTS_KW
 	VALUES
+	EXPLAIN
 )
 
 var keywords = map[string]TokenType{
@@ -123,6 +124,7 @@ var keywords = map[string]TokenType{
 	"end":       END_KW,
 	"exists":    EXISTS_KW,
 	"values":    VALUES,
+	"explain":   EXPLAIN,
 }
 
 func NewParser() *Parser {
@@ -457,6 +459,13 @@ func (p *Parser) parseStatement() (Statement, error) {
 		return p.parseCreateTable()
 	case INSERT:
 		return p.parseInsertOverwrite()
+	case EXPLAIN:
+		p.nextToken()
+		query, err := p.parseSelectQuery()
+		if err != nil {
+			return nil, err
+		}
+		return &ExplainStmt{Query: query}, nil
 	case WITH, SELECT:
 		query, err := p.parseSelectQuery()
 		if err != nil {
@@ -651,7 +660,9 @@ func (p *Parser) parseSelectQuery() (*SelectQuery, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := p.expectPeek(FROM); err != nil {
+	if p.curIs(FROM) {
+		p.nextToken()
+	} else if err := p.expectPeek(FROM); err != nil {
 		return nil, err
 	}
 
@@ -681,8 +692,10 @@ func (p *Parser) parseSelectQuery() (*SelectQuery, error) {
 			return nil, fmt.Errorf("expected alias for subquery in FROM clause")
 		}
 	} else {
-		if err := p.expectPeek(IDENT); err != nil {
-			return nil, fmt.Errorf("expected table name after FROM")
+		if p.cur.Type != IDENT {
+			if err := p.expectPeek(IDENT); err != nil {
+				return nil, fmt.Errorf("expected table name after FROM")
+			}
 		}
 		tableName = p.cur.Literal
 		p.nextToken()
@@ -1016,12 +1029,13 @@ func (p *Parser) parseComparison() (Expression, error) {
 	}
 
 	// Check for arithmetic expressions (e.g., "age + 5")
+	var arithExpr Expression
 	if isArithmeticOp(p.cur) {
-		expr, err := p.parseArithmeticExpr(&ColumnRef{Name: col})
+		arithExpr, err = p.parseArithmeticExpr(&ColumnRef{Name: col})
 		if err != nil {
 			return nil, err
 		}
-		col = exprToString(expr)
+		col = exprToString(arithExpr)
 	}
 
 	// Check for IS NULL, IS NOT NULL
@@ -1061,14 +1075,14 @@ func (p *Parser) parseComparison() (Expression, error) {
 			if parseErr != nil {
 				return nil, parseErr
 			}
-			return &ComparisonExpr{Column: col, Operator: operator, RightColumn: rightCol}, nil
+			return &ComparisonExpr{Column: col, Operator: operator, RightColumn: rightCol, Expr: arithExpr}, nil
 		}
 		if p.cur.Type != STRING && p.cur.Type != NUMBER {
 			return nil, fmt.Errorf("expected literal on right side of expression, got %s", tokenName(p.cur.Type))
 		}
 		val := p.cur.Literal
 		p.nextToken()
-		return &ComparisonExpr{Column: col, Operator: operator, Value: val}, nil
+		return &ComparisonExpr{Column: col, Operator: operator, Value: val, Expr: arithExpr}, nil
 	}
 	return p.parseInExpr(col, not)
 }
@@ -1458,7 +1472,7 @@ func (p *Parser) parseArithmeticPrimary() (Expression, error) {
 	if p.cur.Type == NUMBER || p.cur.Type == STRING {
 		val := p.cur.Literal
 		p.nextToken()
-		return &ComparisonExpr{Column: "", Operator: "=", Value: val}, nil
+		return &LiteralExpr{Value: val}, nil
 	}
 	if p.cur.Type == CASE_KW {
 		return p.parseCaseExpr()
@@ -1533,6 +1547,8 @@ func exprToString(expr Expression) string {
 			return v.Column + " " + v.Operator + " " + v.RightColumn
 		}
 		return v.Column + " " + v.Operator + " " + v.Value
+	case *LiteralExpr:
+		return v.Value
 	default:
 		return ""
 	}

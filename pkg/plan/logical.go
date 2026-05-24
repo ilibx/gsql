@@ -147,7 +147,17 @@ func ExplainLogical(node LogicalNode, indent int) string {
 	case *LogicalFilter:
 		desc = fmt.Sprintf("WHERE %s", expressionToString(n.Predicate))
 	case *LogicalProject:
-		desc = strings.Join(n.Columns, ", ")
+		parts := make([]string, 0, len(n.Columns))
+		for i, c := range n.Columns {
+			if c == "" {
+				if i < len(n.Exprs) && n.Exprs[i] != nil {
+					parts = append(parts, expressionToString(n.Exprs[i]))
+				}
+			} else {
+				parts = append(parts, c)
+			}
+		}
+		desc = strings.Join(parts, ", ")
 	case *LogicalJoin:
 		desc = fmt.Sprintf("ON %s = %s", n.LeftColumn, n.RightColumn)
 	case *LogicalAggregate:
