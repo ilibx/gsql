@@ -367,7 +367,18 @@ func writeLocalTable(tbl *catalog.Table, rows []Row, appendMode bool) error {
 	}
 
 	outputPath := filepath.Join(location, outputFile)
+	var existingRows []Row
 	if appendMode {
+		// Read existing rows if file exists
+		if _, err := os.Stat(outputPath); err == nil {
+			existingRows, err = readCSV(outputPath, tbl.Columns, csvOpts)
+			if err != nil {
+				return fmt.Errorf("failed to read existing CSV: %w", err)
+			}
+			fmt.Printf("-- read %d existing rows from %s\n", len(existingRows), outputPath)
+		} else {
+			fmt.Printf("-- no existing file %s, creating new\n", outputPath)
+		}
 		f, err := os.CreateTemp(location, tempFilePattern(outputFile))
 		if err != nil {
 			return err
@@ -395,6 +406,15 @@ func writeLocalTable(tbl *catalog.Table, rows []Row, appendMode bool) error {
 	if err := os.Rename(tmpPath, outputPath); err != nil {
 		os.Remove(tmpPath)
 		return fmt.Errorf("failed to rename temp file: %w", err)
+	}
+	if appendMode {
+		// Remove the original file and rename the temp file to the original file
+		if err := os.Remove(filepath.Join(location, outputFile)); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("failed to remove original file: %w", err)
+		}
+		if err := os.Rename(outputPath, filepath.Join(location, outputFile)); err != nil {
+			return fmt.Errorf("failed to rename temp file to original: %w", err)
+		}
 	}
 	return nil
 }

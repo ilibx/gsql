@@ -27,6 +27,7 @@ func (c *CreateTableStmt) StatementName() string {
 type InsertOverwriteStmt struct {
 	TableName string
 	Query     *SelectQuery
+	Values    [][]string // Values for INSERT INTO ... VALUES
 	Append    bool
 }
 

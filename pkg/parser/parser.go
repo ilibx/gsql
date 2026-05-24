@@ -83,6 +83,7 @@ const (
 	ELSE_KW
 	END_KW
 	EXISTS_KW
+	VALUES
 )
 
 var keywords = map[string]TokenType{
@@ -118,9 +119,10 @@ var keywords = map[string]TokenType{
 	"case":      CASE_KW,
 	"when":      WHEN_KW,
 	"then":      THEN_KW,
-	"else":       ELSE_KW,
-	"end":        END_KW,
-	"exists":     EXISTS_KW,
+	"else":      ELSE_KW,
+	"end":       END_KW,
+	"exists":    EXISTS_KW,
+	"values":    VALUES,
 }
 
 func NewParser() *Parser {
@@ -299,6 +301,8 @@ func (t TokenType) String() string {
 		return "END"
 	case EXISTS_KW:
 		return "EXISTS"
+case VALUES:
+		return "VALUES"
 	default:
 		return ""
 	}
@@ -596,14 +600,28 @@ func (p *Parser) parseInsertOverwrite() (*InsertOverwriteStmt, error) {
 	} else {
 		return nil, fmt.Errorf("expected INTO or OVERWRITE after INSERT")
 	}
-	if err := p.expectPeek(TABLE); err != nil {
-		return nil, err
+
+	// 支持 INSERT INTO TABLE users 和 INSERT INTO users 两种语法
+	if p.peekIs(TABLE) {
+		p.nextToken()
 	}
 	if err := p.expectPeek(IDENT); err != nil {
-		return nil, fmt.Errorf("expected target table name after INSERT %s TABLE", map[bool]string{true: "INTO", false: "OVERWRITE"}[appendMode])
+		return nil, fmt.Errorf("expected target table name after INSERT %s", map[bool]string{true: "INTO", false: "OVERWRITE"}[appendMode])
 	}
 	tableName := p.cur.Literal
 	p.nextToken()
+
+	// 支持 INSERT INTO ... VALUES
+	if p.curIs(VALUES) {
+		p.nextToken()
+		values, err := p.parseValuesClause()
+		if err != nil {
+			return nil, err
+		}
+		return &InsertOverwriteStmt{TableName: tableName, Values: values, Append: appendMode}, nil
+	}
+
+	// 原有的 INSERT INTO ... SELECT 逻辑
 	query, err := p.parseSelectQuery()
 	if err != nil {
 		return nil, err
@@ -1576,6 +1594,45 @@ func (p *Parser) parseDottedIdentifier() (string, error) {
 		p.nextToken()
 	}
 	return result, nil
+}
+
+func (p *Parser) parseValuesClause() ([][]string, error) {
+	if p.cur.Type != LPAREN {
+		return nil, fmt.Errorf("expected '(' after VALUES, got %s", tokenName(p.cur.Type))
+	}
+	p.nextToken() // consume '('
+
+	var rows [][]string
+	for {
+		var row []string
+		for {
+			if p.cur.Type != STRING && p.cur.Type != NUMBER {
+				return nil, fmt.Errorf("expected value in VALUES clause, got %s", tokenName(p.cur.Type))
+			}
+			row = append(row, p.cur.Literal)
+			p.nextToken()
+			if p.cur.Type != COMMA {
+				break
+			}
+			p.nextToken() // consume ','
+		}
+		rows = append(rows, row)
+
+		if p.cur.Type != RPAREN {
+			return nil, fmt.Errorf("expected ')' after VALUES row, got %s", tokenName(p.cur.Type))
+		}
+		p.nextToken() // consume ')'
+
+		if p.cur.Type != COMMA {
+			break
+		}
+		p.nextToken() // consume ','
+		if p.cur.Type != LPAREN {
+			return nil, fmt.Errorf("expected '(' after ',' in VALUES clause, got %s", tokenName(p.cur.Type))
+		}
+		p.nextToken() // consume '('
+	}
+	return rows, nil
 }
 
 func removeComments(sql string) string {

@@ -25,6 +25,9 @@ func (e *Engine) Execute(stmt parser.Statement) error {
 	case *parser.CreateTableStmt:
 		return e.executeCreateTable(node)
 	case *parser.InsertOverwriteStmt:
+		if node.Values != nil {
+			return e.executeInsertValues(node)
+		}
 		return e.executeInsertOverwrite(node)
 	case *parser.SelectStmt:
 		rows, err := e.executeSelect(node.Query)
@@ -546,6 +549,51 @@ func cloneRows(rows []storage.Row) []storage.Row {
 		cloned = append(cloned, newRow)
 	}
 	return cloned
+}
+
+func (e *Engine) executeInsertValues(stmt *parser.InsertOverwriteStmt) error {
+	target, ok := e.catalog.GetTable(stmt.TableName)
+	if !ok {
+		return fmt.Errorf("target table %s does not exist", stmt.TableName)
+	}
+
+	// 检查 VALUES 列数是否与目标表列数匹配
+	if len(stmt.Values) == 0 {
+		return fmt.Errorf("no values provided for INSERT")
+	}
+	if len(stmt.Values[0]) != len(target.Columns) {
+		return fmt.Errorf("column count mismatch: VALUES has %d columns, table %s has %d columns", len(stmt.Values[0]), stmt.TableName, len(target.Columns))
+	}
+
+	// 将 VALUES 转换为 Row 格式
+	rows := make([]storage.Row, 0, len(stmt.Values))
+	for _, rowValues := range stmt.Values {
+		row := make(storage.Row)
+		for i, colDef := range target.Columns {
+			row[colDef.Name] = rowValues[i]
+		}
+		rows = append(rows, row)
+	}
+
+	if e.Verbose {
+		action := "overwrite"
+		if stmt.Append {
+			action = "append"
+		}
+		fmt.Printf("-- executing INSERT %s with %d rows to table %s\n", action, len(rows), stmt.TableName)
+	}
+
+	if err := storage.WriteRows(target, rows, stmt.Append); err != nil {
+		return fmt.Errorf("write target table %s failed: %w", stmt.TableName, err)
+	}
+	if e.Verbose {
+		action := "overwrote"
+		if stmt.Append {
+			action = "appended"
+		}
+		fmt.Printf("-- %s %d rows to table %s\n", action, len(rows), stmt.TableName)
+	}
+	return nil
 }
 
 func printRows(rows []storage.Row) {
