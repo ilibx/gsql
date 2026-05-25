@@ -252,8 +252,8 @@ CREATE TABLE s3_data (
 )
 WITH (
   storage = 's3',
-  s3_bucket = 'my-bucket',
-  s3_region = 'us-east-1',
+  bucket = 'my-bucket',
+  region = 'us-east-1',
   url = 's3://my-bucket/data/',        -- 或使用 URL，host 为 bucket 名（向后兼容）
   format = 'csv',
   file_pattern = '*.csv',
@@ -266,10 +266,10 @@ S3 配置参数：
 
 | 参数 | 说明 |
 |------|------|
-| `s3_bucket` / `bucket` | S3 存储桶名 |
-| `s3_region` / `region` | 区域（如 `us-east-1`） |
-| `s3_prefix` / `prefix` | 路径前缀 |
-| `s3_endpoint` / `endpoint` | 自定义 endpoint（MinIO 等） |
+| `bucket` | S3 存储桶名 |
+| `region` | 区域（如 `us-east-1`） |
+| `prefix` | 路径前缀 |
+| `endpoint` | 自定义 endpoint（MinIO 等） |
 | `access_key` | 访问密钥 ID |
 | `access_secret` | 访问密钥 Secret |
 | `use_path_style` | 使用路径式寻址 `http://endpoint/bucket/key` 而非虚拟主机式 `http://bucket.endpoint/key`（MinIO 等需要设为 `true`） |
@@ -284,16 +284,16 @@ CREATE TABLE ftp_data (
 )
 WITH (
   storage = 'ftp',
-  ftp_host = 'ftp.example.com',
-  ftp_port = '21',
-  ftp_user = 'username',
-  ftp_pass = 'password',
-  ftp_path = '/data',
+  host = 'ftp.example.com',
+  port = '21',
+  username = 'username',
+  password = 'password',
+  path = '/data',
   format = 'csv',
   file_pattern = '*.csv'
 );
 
--- SFTP 类似，使用 storage = 'sftp' 和相应的 sftp_* 参数
+-- SFTP 类似，使用 storage = 'sftp'，默认端口 22
 ```
 
 ### WebDAV 存储
@@ -305,10 +305,10 @@ CREATE TABLE webdav_data (
 )
 WITH (
   storage = 'webdav',
-  webdav_url = 'http://webdav.example.com',
-  webdav_user = 'username',
-  webdav_pass = 'password',
-  webdav_path = '/public/data',
+  url = 'http://webdav.example.com',
+  username = 'username',
+  password = 'password',
+  path = '/public/data',
   format = 'csv',
   file_pattern = '*.csv'
 );
@@ -458,10 +458,10 @@ gsql 支持多种存储后端，提供两种配置方式：
 | 存储类型 | 说明 | 配置参数 |
 |---------|------|---------|
 | `local` | 本地文件系统（支持分区表目录结构自动检测） | `location`, `file_pattern`, `file_name`, `partition_format` |
-| `s3` | AWS S3 或 S3兼容服务 | `s3_bucket`, `s3_region`, `s3_prefix`, `s3_endpoint`(可选), `access_key`(可选), `access_secret`(可选), `use_path_style`(可选), `retry_mode`(可选) |
-| `ftp` | FTP 服务器 | `ftp_host`, `ftp_port`, `ftp_user`, `ftp_pass`, `ftp_path` |
-| `sftp` | SFTP 服务器 | `sftp_host`, `sftp_port`, `sftp_user`, `sftp_pass`, `sftp_path` |
-| `webdav` | WebDAV 服务 | `webdav_url`, `webdav_user`, `webdav_pass`, `webdav_path` |
+| `s3` | AWS S3 或 S3兼容服务 | `bucket`, `region`, `prefix`, `endpoint`(可选), `access_key`(可选), `access_secret`(可选), `use_path_style`(可选), `retry_mode`(可选) |
+| `ftp` | FTP 服务器 | `host`, `port`(默认21), `username`, `password`, `path` |
+| `sftp` | SFTP 服务器 | `host`, `port`(默认22), `username`, `password`, `path` |
+| `webdav` | WebDAV 服务 | `url`(必填), `username`, `password`, `path` |
 | `git-lfs` / `gitlfs` | Git LFS 版本控制 | `git_lfs_repo` 或 `git_lfs_path` |
 
 ### 2. URL 方式（推荐）
@@ -506,9 +506,9 @@ CREATE TABLE ftp_data (
   ...
 )
 WITH (
-  url = 'ftp://ftp.example.com/data',  -- 自动推断 storage=ftp
-  ftp_user = 'custom_user',            -- 覆盖 URL 中的用户名
-  ftp_pass = 'custom_pass',            -- 覆盖 URL 中的密码
+  url = 'ftp://ftp.example.com/data',  -- 自动推断 storage=ftp，URL 中已有用户名密码
+  username = 'custom_user',            -- 覆盖 URL 中的用户名
+  password = 'custom_pass',            -- 覆盖 URL 中的密码
   format = 'csv'
 );
 ```

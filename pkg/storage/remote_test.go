@@ -19,8 +19,8 @@ func TestFTPStorageTypeDetection(t *testing.T) {
 		WithOptions: map[string]string{
 			"storage":      "ftp",
 			"url":          "ftp://ftp.example.com:21/data",
-			"user":         "testuser",
-			"pass":         "testpass",
+			"username":     "testuser",
+			"password":     "testpass",
 			"format":       "csv",
 			"file_pattern": "*.csv",
 		},
@@ -45,8 +45,8 @@ func TestSFTPStorageTypeDetection(t *testing.T) {
 		WithOptions: map[string]string{
 			"storage":      "sftp",
 			"url":          "sftp://sftp.example.com:22/home/user/data",
-			"user":         "sftpuser",
-			"pass":         "sftppass",
+			"username":     "sftpuser",
+			"password":     "sftppass",
 			"format":       "csv",
 			"file_pattern": "*.csv",
 		},
@@ -71,8 +71,8 @@ func TestWebDAVStorageTypeDetection(t *testing.T) {
 		WithOptions: map[string]string{
 			"storage":       "webdav",
 			"url":           "http://webdav.example.com",
-			"user":          "webdavuser",
-			"pass":          "webdavpass",
+			"username":      "webdavuser",
+			"password":      "webdavpass",
 			"path":          "/public/data",
 			"format":        "csv",
 			"file_pattern":  "*.csv",
