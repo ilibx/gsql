@@ -173,6 +173,8 @@ type SelectQuery struct {
 	TableAlias    string
 	FromSubquery  *SelectQuery
 	FromAlias     string
+	FromValues    [][]string // VALUES rows in FROM clause
+	FromValuesCols []string  // column aliases from VALUES AS t(col1, col2, ...)
 	Joins         []JoinClause
 	Where         Expression
 	GroupBy       []string

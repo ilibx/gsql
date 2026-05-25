@@ -953,6 +953,10 @@ func isPartitionOp(op string) bool {
 func LogicalToPhysical(node LogicalNode, ctx *PhysicalPlanContext) (PlanNode, error) {
 	switch n := node.(type) {
 	case *LogicalScan:
+		if n.TableName == "" {
+			// No FROM clause — single empty row (e.g., SELECT 1 AS x)
+			return NewCTETableScanNode("", []storage.Row{{}}), nil
+		}
 		table, ok := ctx.Catalog.GetTable(n.TableName)
 		if !ok {
 			return nil, fmt.Errorf("table %s not found", n.TableName)

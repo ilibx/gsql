@@ -226,7 +226,7 @@ func tokenName(t TokenType) string {
 		return "HAVING"
 	case SEMICOLON:
 		return ";"
-	case CREATE, TABLE, WITH, AS, INSERT, OVERWRITE, SELECT, FROM, WHERE, ORDER, BY, LIMIT, IS, NULL_KEYWORD, NOT, IN_KEYWORD, DISTINCT, EXTERNAL, OVER, PARTITION:
+	case CREATE, TABLE, WITH, AS, INSERT, OVERWRITE, SELECT, FROM, WHERE, ORDER, BY, LIMIT, IS, NULL_KEYWORD, NOT, IN_KEYWORD, DISTINCT, EXTERNAL, OVER, PARTITION, VALUES:
 		return strings.ToUpper(t.String())
 	default:
 		return "UNKNOWN"
@@ -660,51 +660,122 @@ func (p *Parser) parseSelectQuery() (*SelectQuery, error) {
 	if err != nil {
 		return nil, err
 	}
-	if p.curIs(FROM) {
-		p.nextToken()
-	} else if err := p.expectPeek(FROM); err != nil {
-		return nil, err
-	}
+
+	// Advance past the last select item token so p.cur points to
+	// the next meaningful token (FROM, UNION, WHERE, etc.)
+	p.nextToken()
 
 	var tableName string
 	var tableAlias string
 	var fromSubquery *SelectQuery
 	var fromAlias string
-	if p.peekIs(LPAREN) {
+	var fromValues [][]string
+	var fromValuesCols []string
+	if p.curIs(FROM) {
 		p.nextToken()
-		p.nextToken()
-		fromSubquery, err = p.parseSelectQuery()
-		if err != nil {
-			return nil, err
-		}
-		if p.cur.Type != RPAREN {
-			return nil, fmt.Errorf("expected ) after subquery in FROM clause")
-		}
-		p.nextToken()
-		if p.curIs(AS) {
+		if p.curIs(LPAREN) {
 			p.nextToken()
-		}
-		if p.cur.Type == IDENT {
-			fromAlias = p.cur.Literal
-			tableAlias = fromAlias
-			p.nextToken()
-		} else {
-			return nil, fmt.Errorf("expected alias for subquery in FROM clause")
-		}
-	} else {
-		if p.cur.Type != IDENT {
-			if err := p.expectPeek(IDENT); err != nil {
-				return nil, fmt.Errorf("expected table name after FROM")
+			if p.cur.Type == VALUES {
+				// VALUES (...) in FROM clause
+				p.nextToken()
+				for {
+					if p.cur.Type != LPAREN {
+						return nil, fmt.Errorf("expected ( after VALUES")
+					}
+					p.nextToken()
+					var row []string
+					for {
+						if p.cur.Type == STRING || p.cur.Type == NUMBER {
+							row = append(row, p.cur.Literal)
+							p.nextToken()
+						} else {
+							return nil, fmt.Errorf("expected value in VALUES, got %s", tokenName(p.cur.Type))
+						}
+						if p.cur.Type == COMMA {
+							p.nextToken()
+							continue
+						}
+						break
+					}
+					if p.cur.Type != RPAREN {
+						return nil, fmt.Errorf("expected ) after VALUES row")
+					}
+					fromValues = append(fromValues, row)
+					p.nextToken()
+					if p.cur.Type == COMMA {
+						p.nextToken()
+						continue
+					}
+					break
+				}
+				if p.cur.Type != RPAREN {
+					return nil, fmt.Errorf("expected ) after VALUES list")
+				}
+				p.nextToken()
+				if p.curIs(AS) {
+					p.nextToken()
+				}
+				if p.cur.Type == IDENT {
+					fromAlias = p.cur.Literal
+					tableAlias = fromAlias
+					p.nextToken()
+					if p.curIs(LPAREN) {
+						p.nextToken()
+						for {
+							if p.cur.Type != IDENT {
+								return nil, fmt.Errorf("expected column name in VALUES alias")
+							}
+							fromValuesCols = append(fromValuesCols, p.cur.Literal)
+							p.nextToken()
+							if p.cur.Type == COMMA {
+								p.nextToken()
+								continue
+							}
+							break
+						}
+						if p.cur.Type != RPAREN {
+							return nil, fmt.Errorf("expected ) after VALUES column aliases")
+						}
+						p.nextToken()
+					}
+				} else {
+					return nil, fmt.Errorf("expected alias for VALUES in FROM clause")
+				}
+			} else {
+				fromSubquery, err = p.parseSelectQuery()
+				if err != nil {
+					return nil, err
+				}
+				if p.cur.Type != RPAREN {
+					return nil, fmt.Errorf("expected ) after subquery in FROM clause")
+				}
+				p.nextToken()
+				if p.curIs(AS) {
+					p.nextToken()
+				}
+				if p.cur.Type == IDENT {
+					fromAlias = p.cur.Literal
+					tableAlias = fromAlias
+					p.nextToken()
+				} else {
+					return nil, fmt.Errorf("expected alias for subquery in FROM clause")
+				}
 			}
-		}
-		tableName = p.cur.Literal
-		p.nextToken()
-		if p.curIs(AS) {
+		} else {
+			if p.cur.Type != IDENT {
+				if err := p.expectPeek(IDENT); err != nil {
+					return nil, fmt.Errorf("expected table name after FROM")
+				}
+			}
+			tableName = p.cur.Literal
 			p.nextToken()
-		}
-		if p.cur.Type == IDENT {
-			tableAlias = p.cur.Literal
-			p.nextToken()
+			if p.curIs(AS) {
+				p.nextToken()
+			}
+			if p.cur.Type == IDENT {
+				tableAlias = p.cur.Literal
+				p.nextToken()
+			}
 		}
 	}
 
@@ -808,6 +879,8 @@ func (p *Parser) parseSelectQuery() (*SelectQuery, error) {
 		TableAlias:    tableAlias,
 		FromSubquery:  fromSubquery,
 		FromAlias:     fromAlias,
+		FromValues:    fromValues,
+		FromValuesCols: fromValuesCols,
 		ColumnExprs:   columnExprs,
 		Aggregates:    aggregates,
 		WindowExprs:   windowExprs,
@@ -1232,7 +1305,12 @@ func (p *Parser) parseSelectItems() ([]string, []Expression, []AggregateExpr, []
 						colAliases[p.cur.Literal] = litKey
 					}
 				}
-				if p.cur.Type == COMMA {
+				if p.curIs(COMMA) {
+					p.nextToken()
+					continue
+				}
+				if p.peekIs(COMMA) {
+					p.nextToken()
 					p.nextToken()
 					continue
 				}

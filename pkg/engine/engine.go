@@ -189,6 +189,24 @@ func (e *Engine) executeSelectWithCTEs(query *parser.SelectQuery, cteTables map[
 		}
 	}
 
+	if query.FromValues != nil {
+		var rows []storage.Row
+		for _, vals := range query.FromValues {
+			row := make(storage.Row)
+			for i, v := range vals {
+				col := fmt.Sprintf("COL_%d", i)
+				if i < len(query.FromValuesCols) && query.FromValuesCols[i] != "" {
+					col = query.FromValuesCols[i]
+				}
+				row[col] = v
+			}
+			rows = append(rows, row)
+		}
+		if query.FromAlias != "" {
+			cteTables[strings.ToLower(query.FromAlias)] = rows
+		}
+	}
+
 	logical, err := e.buildLogicalPlan(query, cteTables)
 	if err != nil {
 		return nil, err
@@ -209,7 +227,19 @@ func (e *Engine) executeSelectWithCTEs(query *parser.SelectQuery, cteTables map[
 		return nil, err
 	}
 
-	// apply column aliases to row keys
+	// UNION [ALL]
+	if query.UnionQuery != nil {
+		rightRows, err := e.executeSelectWithCTEs(query.UnionQuery, cteTables)
+		if err != nil {
+			return nil, err
+		}
+		rows = append(rows, rightRows...)
+		if !query.UnionAll {
+			rows = dedupRows(rows)
+		}
+	}
+
+	// apply column aliases to row keys (after UNION so both sides get remapped)
 	if len(query.ColumnAliases) > 0 {
 		origToAlias := make(map[string]string)
 		for alias, orig := range query.ColumnAliases {
@@ -222,18 +252,6 @@ func (e *Engine) executeSelectWithCTEs(query *parser.SelectQuery, cteTables map[
 					delete(row, orig)
 				}
 			}
-		}
-	}
-
-	// UNION [ALL]
-	if query.UnionQuery != nil {
-		rightRows, err := e.executeSelectWithCTEs(query.UnionQuery, cteTables)
-		if err != nil {
-			return nil, err
-		}
-		rows = append(rows, rightRows...)
-		if !query.UnionAll {
-			rows = dedupRows(rows)
 		}
 	}
 
@@ -260,6 +278,9 @@ func (e *Engine) buildLogicalPlan(sel *parser.SelectQuery, cteTables map[string]
 func (e *Engine) buildBaseRelation(sel *parser.SelectQuery, cteTables map[string][]storage.Row) plan.LogicalNode {
 	tableName := sel.Table
 	if sel.FromSubquery != nil && sel.FromAlias != "" {
+		tableName = sel.FromAlias
+	}
+	if sel.FromValues != nil && sel.FromAlias != "" {
 		tableName = sel.FromAlias
 	}
 
@@ -445,6 +466,10 @@ func (e *Engine) expandStarColumns(sel *parser.SelectQuery) []string {
 				}
 			}
 		}
+	}
+
+	if sel.FromValues != nil && len(sel.FromValuesCols) > 0 {
+		expanded = append(expanded, sel.FromValuesCols...)
 	}
 
 	for _, join := range sel.Joins {
