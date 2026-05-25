@@ -61,6 +61,7 @@ gsql 拥有以下核心层次：
   - `FTP` / `SFTP` 文件服务器
   - `WebDAV` 协议支持
   - `Git LFS` 版本控制大文件访问
+  - `Lark (飞书)` 云文档存储，支持文件读写及分享到群聊
 - 表别名支持（`FROM users u`、`JOIN orders o`）
 - 列别名支持（`COUNT(*) AS cnt`、`ORDER BY cnt`）
 - `UNION ALL` 合并多个查询结果
@@ -341,6 +342,56 @@ WITH (
 );
 ```
 
+### 飞书 Lark 云文档
+
+支持将飞书云文档作为存储后端，查询结果可自动分享到群聊：
+
+```sql
+CREATE TABLE lark_data (
+  id INT,
+  name STRING
+)
+WITH (
+  storage = 'lark',
+  app_id = 'cli_xxxxxxxxxxxx',
+  app_secret = 'xxxxxxxxxxxxxxxxxxxxxxxxxxxx',
+  root_token = 'xxxxxxxxxx',          -- 根文件夹 token
+  chat_id = 'oc_xxxxxxxxxxxxx',       -- 可选，分享到的群聊 ID
+  format = 'csv',
+  file_pattern = '*.csv'
+);
+
+-- 查询 Lark 网盘中的文件
+SELECT * FROM lark_data LIMIT 10;
+
+-- INSERT 结果会自动写入 Lark 网盘，
+-- 如果配置了 chat_id 还会自动分享到群中
+INSERT OVERWRITE TABLE lark_data
+SELECT id, name FROM users WHERE id > 100;
+```
+
+Lark 配置参数：
+
+| 参数 | 说明 |
+|------|------|
+| `app_id` / `lark_app_id` | 飞书应用的 App ID |
+| `app_secret` / `lark_app_secret` | 飞书应用的 App Secret |
+| `root_token` / `lark_root_token` | 根文件夹 token（云文档中文件夹链接末尾的 token） |
+| `chat_id` / `lark_chat_id` | 群聊 ID（可选），配置后写入文件时自动分享到群 |
+
+**分享到群聊**：如果配置了 `chat_id`，每次通过 `INSERT OVERWRITE` 写入文件后，文件会自动发送到指定群聊。也可通过 `lark://` URL 方式配置：
+
+```sql
+CREATE TABLE lark_data (
+  id INT,
+  name STRING
+)
+WITH (
+  url = 'lark://root_token_xxx/path?app_id=cli_xxx&app_secret=xxx&chat_id=oc_xxx',
+  format = 'csv'
+);
+```
+
 ### 无 FROM 查询
 
 ```sql
@@ -463,6 +514,7 @@ gsql 支持多种存储后端，提供两种配置方式：
 | `sftp` | SFTP 服务器 | `host`, `port`(默认22), `username`, `password`, `path` |
 | `webdav` | WebDAV 服务 | `url`(必填), `username`, `password`, `path` |
 | `git-lfs` / `gitlfs` | Git LFS 版本控制 | `git_lfs_repo` 或 `git_lfs_path` |
+| `lark` | 飞书 Lark 云文档 | `app_id`, `app_secret`, `root_token`, `chat_id`(可选) |
 
 ### 2. URL 方式（推荐）
 
@@ -490,6 +542,7 @@ WITH (
 | `hdfs://`  | `hdfs://namenode:8020/data`                                              | HDFS 文件系统，支持指定 namenode 和端口                                                 |
 | `webdav://`| `webdav://user:pass@webdav.example.com/data`                             | WebDAV 服务，支持用户名密码                                                             |
 | `git://`   | `git:///path/to/repo` 或 `git://user:pass@git.example.com/repo.git`      | Git 仓库（支持 Git LFS），可以是本地路径或远程仓库 URL
+| `lark://`  | `lark://root_token/path?app_id=xxx&app_secret=xxx&chat_id=xxx`           | 飞书 Lark 云文档，host 为根文件夹 token，路径为文件路径，查询参数支持 `app_id`, `app_secret`, `chat_id` |
 
 ### 参数优先级
 
@@ -512,6 +565,39 @@ WITH (
   format = 'csv'
 );
 ```
+
+## Go 库使用
+
+gsql 也可以作为 Go 库直接嵌入使用：
+
+```go
+import "github.com/ilibx/gsql"
+
+db := gsql.Open()
+defer db.Close()
+
+// 建表
+db.Exec(`CREATE TABLE users (
+  id INT, name STRING
+) WITH (
+  storage = 'local',
+  format = 'csv',
+  location = '/tmp/users',
+  file_pattern = '*.csv'
+)`)
+
+// 插入数据
+db.Exec(`INSERT OVERWRITE TABLE users
+SELECT 1 AS id, 'alice' AS name`)
+
+// 查询，返回 []map[string]string
+rows, err := db.Exec(`SELECT * FROM users`)
+for _, row := range rows {
+    fmt.Println(row["id"], row["name"])
+}
+```
+
+`Open()` 创建独立的 Catalog 实例，多次 `Exec` 调用共享表定义，适合在单个进程中管理多个数据库会话。
 
 ## 未来扩展方向
 

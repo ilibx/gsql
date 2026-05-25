@@ -373,6 +373,8 @@ func GetStorage(tbl *catalog.Table) (Storage, error) {
 		return newWebDAVStorage(tbl)
 	case "git-lfs", "gitlfs":
 		return newGitLFSStorage(tbl)
+	case "lark":
+		return newLarkStorage(tbl)
 	default:
 		return nil, fmt.Errorf("unsupported storage type %q", storageType)
 	}

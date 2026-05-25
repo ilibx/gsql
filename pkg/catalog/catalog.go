@@ -186,6 +186,21 @@ func parseStorageURL(tbl *Table) {
         } else {
             tbl.WithOptions["repo"] = parsed.Path
         }
+    case "lark":
+        tbl.WithOptions["storage"] = "lark"
+        tbl.WithOptions["root_token"] = parsed.Host
+        if parsed.User != nil {
+            tbl.WithOptions["app_id"] = parsed.User.Username()
+            if pass, ok := parsed.User.Password(); ok {
+                tbl.WithOptions["app_secret"] = pass
+            }
+        }
+        for k, v := range parsed.Query() {
+            if len(v) > 0 {
+                key := strings.ToLower(k)
+                tbl.WithOptions[key] = v[0]
+            }
+        }
     case "local":
         tbl.WithOptions["storage"] = "local"
         tbl.WithOptions["location"] = parsed.Path
