@@ -170,6 +170,10 @@ func (e *Engine) executeSelect(query *parser.SelectQuery) ([]storage.Row, error)
 	return e.executeSelectWithCTEs(query, make(map[string][]storage.Row))
 }
 
+func (e *Engine) ExecuteSelect(query *parser.SelectQuery) ([]storage.Row, error) {
+	return e.executeSelectWithCTEs(query, make(map[string][]storage.Row))
+}
+
 func (e *Engine) executeSelectWithCTEs(query *parser.SelectQuery, cteTables map[string][]storage.Row) ([]storage.Row, error) {
 	for _, cte := range query.CTEs {
 		rows, err := e.executeSelectWithCTEs(cte.Query, cteTables)
