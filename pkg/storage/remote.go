@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/url"
 	"path/filepath"
 	"strings"
@@ -16,7 +17,6 @@ import (
 	"golang.org/x/crypto/ssh"
 
 	"github.com/ilibx/gsql/pkg/catalog"
-	"github.com/ilibx/gsql/pkg/serde"
 )
 
 // Remote storage option keys (without type prefix)
@@ -50,33 +50,39 @@ func parseRemoteURL(rawURL string, defaultPort string) (host, port, path string,
 	return host, port, path, nil
 }
 
-// readFTPTable reads data from FTP
-func readFTPTable(tbl *catalog.Table, filters []PartitionFilter) ([]Row, error) {
-	// Try to get URL from either 'url' or individual parameters
+// ---------------------------------------------------------------------------
+// FTP Storage
+// ---------------------------------------------------------------------------
+
+type ftpStorage struct {
+	addr string
+	user string
+	pass string
+	root string
+}
+
+func newFTPStorage(tbl *catalog.Table) (Storage, error) {
 	rawURL := tbl.Option(urlKey, "")
 	host := tbl.Option("host", "")
 	port := tbl.Option("port", "21")
-	path := tbl.Option("path", "")
+	root := tbl.Option("path", "")
 	user := tbl.Option("username", "")
 	pass := tbl.Option("password", "")
 
-	// If URL is provided, parse it to get host, port, path, user, pass
 	if rawURL != "" {
 		parsedHost, parsedPort, parsedPath, err := parseRemoteURL(rawURL, "21")
 		if err != nil {
 			return nil, err
 		}
-		// Override individual parameters with URL values
 		if host == "" {
 			host = parsedHost
 		}
-		if port == "21" {
+		if port == "21" || port == "" {
 			port = parsedPort
 		}
-		if path == "" {
-			path = parsedPath
+		if root == "" {
+			root = parsedPath
 		}
-		// Parse user and pass from URL if not provided
 		if u, err := url.Parse(rawURL); err == nil && u.User != nil {
 			if user == "" {
 				user = u.User.Username()
@@ -86,153 +92,326 @@ func readFTPTable(tbl *catalog.Table, filters []PartitionFilter) ([]Row, error) 
 			}
 		}
 	}
-
 	if host == "" {
 		return nil, fmt.Errorf("missing host for FTP table %s", tbl.Name)
 	}
-	pattern := tbl.Option("file_pattern", "*")
-	format := strings.ToLower(tbl.Option("format", ""))
-	csvOpts := serde.NewCSVOptions(tbl)
+	return &ftpStorage{
+		addr: fmt.Sprintf("%s:%s", host, port),
+		user: user,
+		pass: pass,
+		root: strings.TrimSuffix(root, "/"),
+	}, nil
+}
 
-	if format == "" {
-		return nil, fmt.Errorf("missing format for table %s", tbl.Name)
-	}
-
-	// Connect to FTP with timeout
-	addr := fmt.Sprintf("%s:%s", host, port)
-	conn, err := ftp.DialTimeout(addr, dialTimeout)
+func (s *ftpStorage) dial() (*ftp.ServerConn, error) {
+	conn, err := ftp.DialTimeout(s.addr, dialTimeout)
 	if err != nil {
-		return nil, fmt.Errorf("failed to connect to FTP %s: %w", addr, err)
+		return nil, fmt.Errorf("failed to connect to FTP %s: %w", s.addr, err)
 	}
-	defer conn.Quit()
-
-	if user != "" {
-		if err := conn.Login(user, pass); err != nil {
+	if s.user != "" {
+		if err := conn.Login(s.user, s.pass); err != nil {
+			conn.Quit()
 			return nil, fmt.Errorf("failed to login to FTP: %w", err)
 		}
 	}
-
-	// List files
-	if path != "" {
-		if err := conn.ChangeDir(path); err != nil {
-			return nil, fmt.Errorf("failed to change to directory %s: %w", path, err)
-		}
-	}
-
-	entries, err := conn.List(".")
-	if err != nil {
-		return nil, fmt.Errorf("failed to list FTP directory: %w", err)
-	}
-
-	var fileNames []string
-	for _, entry := range entries {
-		if entry.Type != ftp.EntryTypeFile {
-			continue
-		}
-		if matchPattern(entry.Name, pattern) {
-			fileNames = append(fileNames, entry.Name)
-		}
-	}
-
-	if len(fileNames) == 0 {
-		return nil, fmt.Errorf("no files found on FTP at %s", path)
-	}
-
-	// Read files in parallel
-	type fileResult struct {
-		rows []Row
-		err  error
-	}
-
-	resultCh := make(chan fileResult, len(fileNames))
-	for _, fileName := range fileNames {
-		go func(fileName string) {
-			conn2, err := ftp.DialTimeout(addr, dialTimeout)
-			if err != nil {
-				resultCh <- fileResult{err: fmt.Errorf("failed to connect to FTP: %w", err)}
-				return
-			}
-			defer conn2.Quit()
-
-			if user != "" {
-				if err := conn2.Login(user, pass); err != nil {
-					resultCh <- fileResult{err: fmt.Errorf("failed to login to FTP: %w", err)}
-					return
-				}
-			}
-
-			if path != "" {
-				if err := conn2.ChangeDir(path); err != nil {
-					resultCh <- fileResult{err: fmt.Errorf("failed to change to directory %s: %w", path, err)}
-					return
-				}
-			}
-
-			resp, err := conn2.Retr(fileName)
-			if err != nil {
-				resultCh <- fileResult{err: fmt.Errorf("failed to retrieve file %s: %w", fileName, err)}
-				return
-			}
-			defer resp.Close()
-
-			body, err := io.ReadAll(resp)
-			if err != nil {
-				resultCh <- fileResult{err: fmt.Errorf("failed to read file %s: %w", fileName, err)}
-				return
-			}
-
-			switch format {
-			case "csv":
-				rows, err := serde.Decode(context.Background(), "csv", bytes.NewReader(body), tbl.Columns, csvOpts)
-				resultCh <- fileResult{rows: rows, err: err}
-			case "json":
-				rows, err := serde.Decode(context.Background(), "json", bytes.NewReader(body), tbl.Columns, serde.CSVOptions{})
-				resultCh <- fileResult{rows: rows, err: err}
-			default:
-				resultCh <- fileResult{err: fmt.Errorf("unsupported format %q", format)}
-			}
-		}(fileName)
-	}
-
-	var rows []Row
-	for i := 0; i < len(fileNames); i++ {
-		result := <-resultCh
-		if result.err != nil {
-			return nil, result.err
-		}
-		rows = append(rows, result.rows...)
-	}
-
-	return rows, nil
+	return conn, nil
 }
 
-// readSFTPTable reads data from SFTP
-func readSFTPTable(tbl *catalog.Table, filters []PartitionFilter) ([]Row, error) {
-	// Try to get URL from either 'url' or individual parameters
+func (s *ftpStorage) resolve(name string) string {
+	if s.root == "" {
+		return name
+	}
+	return s.root + "/" + name
+}
+
+func (s *ftpStorage) Open(ctx context.Context, name string) (File, error) {
+	conn, err := s.dial()
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Quit()
+
+	filePath := s.resolve(name)
+	if s.root != "" {
+		if err := conn.ChangeDir(s.root); err != nil {
+			return nil, fmt.Errorf("failed to change to directory %s: %w", s.root, err)
+		}
+	}
+	resp, err := conn.Retr(filepath.Base(filePath))
+	if err != nil {
+		return nil, fmt.Errorf("failed to retrieve file %s: %w", filePath, err)
+	}
+	defer resp.Close()
+
+	data, err := io.ReadAll(resp)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read file %s: %w", filePath, err)
+	}
+	return &ftpReadFile{baseFile: baseFile{}, reader: bytes.NewReader(data), name: name}, nil
+}
+
+func (s *ftpStorage) Stat(ctx context.Context, name string) (FileInfo, error) {
+	conn, err := s.dial()
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Quit()
+
+	if s.root != "" {
+		if err := conn.ChangeDir(s.root); err != nil {
+			return nil, err
+		}
+	}
+	entries, err := conn.List(".")
+	if err != nil {
+		return nil, err
+	}
+	baseName := filepath.Base(name)
+	for _, e := range entries {
+		if e.Name == baseName {
+			return &baseFileInfo{
+				name:  e.Name,
+				path:  name,
+				size:  uint64(e.Size),
+				isDir: e.Type == ftp.EntryTypeFolder,
+			}, nil
+		}
+	}
+	return nil, fmt.Errorf("file %s not found", name)
+}
+
+func (s *ftpStorage) Glob(ctx context.Context, pattern string) ([]string, error) {
+	conn, err := s.dial()
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Quit()
+
+	if s.root != "" {
+		if err := conn.ChangeDir(s.root); err != nil {
+			return nil, err
+		}
+	}
+	entries, err := conn.List(".")
+	if err != nil {
+		return nil, err
+	}
+	var result []string
+	for _, e := range entries {
+		if e.Type != ftp.EntryTypeFile {
+			continue
+		}
+		if matchPattern(e.Name, pattern) {
+			result = append(result, e.Name)
+		}
+	}
+	return result, nil
+}
+
+func (s *ftpStorage) List(ctx context.Context, dirPath string) ([]string, error) {
+	conn, err := s.dial()
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Quit()
+
+	path := s.resolve(dirPath)
+	if path != "" {
+		if err := conn.ChangeDir(path); err != nil {
+			return nil, err
+		}
+	} else if s.root != "" {
+		if err := conn.ChangeDir(s.root); err != nil {
+			return nil, err
+		}
+	}
+	entries, err := conn.List(".")
+	if err != nil {
+		return nil, err
+	}
+	var result []string
+	for _, e := range entries {
+		entry := e.Name
+		if dirPath == "" || dirPath == "." {
+			result = append(result, entry)
+		} else {
+			result = append(result, filepath.Join(dirPath, entry))
+		}
+	}
+	return result, nil
+}
+
+func (s *ftpStorage) Mkdir(ctx context.Context, name string, perm fs.FileMode) error {
+	conn, err := s.dial()
+	if err != nil {
+		return err
+	}
+	defer conn.Quit()
+	return conn.MakeDir(s.resolve(name))
+}
+
+func (s *ftpStorage) MkdirAll(ctx context.Context, name string, perm fs.FileMode) error {
+	conn, err := s.dial()
+	if err != nil {
+		return err
+	}
+	defer conn.Quit()
+
+	parts := strings.Split(strings.Trim(s.resolve(name), "/"), "/")
+	current := ""
+	for _, p := range parts {
+		current += "/" + p
+		if err := conn.MakeDir(current); err != nil {
+			// ignore "already exists" errors
+		}
+	}
+	return nil
+}
+
+func (s *ftpStorage) Remove(ctx context.Context, name string) error {
+	conn, err := s.dial()
+	if err != nil {
+		return err
+	}
+	defer conn.Quit()
+	return conn.Delete(s.resolve(name))
+}
+
+func (s *ftpStorage) RemoveAll(ctx context.Context, name string) error {
+	// FTP doesn't have recursive delete; try Delete and ignore errors
+	conn, err := s.dial()
+	if err != nil {
+		return err
+	}
+	defer conn.Quit()
+	conn.Delete(s.resolve(name))
+	return nil
+}
+
+func (s *ftpStorage) WriteFile(ctx context.Context, name string, data []byte, perm fs.FileMode) error {
+	conn, err := s.dial()
+	if err != nil {
+		return err
+	}
+	defer conn.Quit()
+
+	filePath := s.resolve(name)
+	if s.root != "" {
+		if err := conn.ChangeDir(s.root); err != nil {
+			return err
+		}
+	}
+	return conn.Stor(filepath.Base(filePath), bytes.NewReader(data))
+}
+
+func (s *ftpStorage) Rename(ctx context.Context, oldName, newName string) error {
+	conn, err := s.dial()
+	if err != nil {
+		return err
+	}
+	defer conn.Quit()
+	return conn.Rename(s.resolve(oldName), s.resolve(newName))
+}
+
+func (s *ftpStorage) Create(ctx context.Context, name string) (File, error) {
+	return &ftpWriteFile{baseFile: baseFile{}, store: s, name: name, buf: &bytes.Buffer{}}, nil
+}
+
+func (s *ftpStorage) Exists(ctx context.Context, name string) bool {
+	conn, err := s.dial()
+	if err != nil {
+		return false
+	}
+	defer conn.Quit()
+
+	if s.root != "" {
+		conn.ChangeDir(s.root)
+	}
+	entries, err := conn.List(".")
+	if err != nil {
+		return false
+	}
+	baseName := filepath.Base(name)
+	for _, e := range entries {
+		if e.Name == baseName {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *ftpStorage) Join(elem ...string) string {
+	return filepath.Join(elem...)
+}
+
+type ftpReadFile struct {
+	baseFile
+	reader *bytes.Reader
+	name   string
+}
+
+func (f *ftpReadFile) Read(p []byte) (int, error) { return f.reader.Read(p) }
+func (f *ftpReadFile) Close() error                { return nil }
+func (f *ftpReadFile) String() string              { return f.name }
+
+type ftpWriteFile struct {
+	baseFile
+	store *ftpStorage
+	name  string
+	buf   *bytes.Buffer
+}
+
+func (f *ftpWriteFile) Write(p []byte) (int, error) { return f.buf.Write(p) }
+func (f *ftpWriteFile) Close() error {
+	conn, err := f.store.dial()
+	if err != nil {
+		return err
+	}
+	defer conn.Quit()
+	filePath := f.store.resolve(f.name)
+	if f.store.root != "" {
+		if err := conn.ChangeDir(f.store.root); err != nil {
+			return err
+		}
+	}
+	return conn.Stor(filepath.Base(filePath), bytes.NewReader(f.buf.Bytes()))
+}
+func (f *ftpWriteFile) String() string { return f.name }
+
+// ---------------------------------------------------------------------------
+// SFTP Storage
+// ---------------------------------------------------------------------------
+
+type sftpStorage struct {
+	addr   string
+	user   string
+	pass   string
+	root   string
+	sshCfg *ssh.ClientConfig
+}
+
+func newSFTPStorage(tbl *catalog.Table) (Storage, error) {
 	rawURL := tbl.Option(urlKey, "")
 	host := tbl.Option("host", "")
 	port := tbl.Option("port", "22")
-	path := tbl.Option("path", "")
+	root := tbl.Option("path", "")
 	user := tbl.Option("username", "")
 	pass := tbl.Option("password", "")
 
-	// If URL is provided, parse it to get host, port, path, user, pass
 	if rawURL != "" {
 		parsedHost, parsedPort, parsedPath, err := parseRemoteURL(rawURL, "22")
 		if err != nil {
 			return nil, err
 		}
-		// Override individual parameters with URL values
 		if host == "" {
 			host = parsedHost
 		}
-		if port == "22" {
+		if port == "22" || port == "" {
 			port = parsedPort
 		}
-		if path == "" {
-			path = parsedPath
+		if root == "" {
+			root = parsedPath
 		}
-		// Parse user and pass from URL if not provided
 		if u, err := url.Parse(rawURL); err == nil && u.User != nil {
 			if user == "" {
 				user = u.User.Username()
@@ -242,142 +421,273 @@ func readSFTPTable(tbl *catalog.Table, filters []PartitionFilter) ([]Row, error)
 			}
 		}
 	}
-
 	if host == "" {
 		return nil, fmt.Errorf("missing host for SFTP table %s", tbl.Name)
 	}
-	pattern := tbl.Option("file_pattern", "*")
-	format := strings.ToLower(tbl.Option("format", ""))
-	csvOpts := serde.NewCSVOptions(tbl)
-
-	if format == "" {
-		return nil, fmt.Errorf("missing format for table %s", tbl.Name)
-	}
-
-	// Create SSH client config
-	config := &ssh.ClientConfig{
-		User: user,
-		Auth: []ssh.AuthMethod{
-			ssh.Password(pass),
-		},
+	sshCfg := &ssh.ClientConfig{
+		User:            user,
+		Auth:            []ssh.AuthMethod{ssh.Password(pass)},
 		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
 		Timeout:         dialTimeout,
 	}
+	return &sftpStorage{
+		addr:   fmt.Sprintf("%s:%s", host, port),
+		user:   user,
+		pass:   pass,
+		root:   strings.TrimSuffix(root, "/"),
+		sshCfg: sshCfg,
+	}, nil
+}
 
-	addr := fmt.Sprintf("%s:%s", host, port)
-	client, err := ssh.Dial("tcp", addr, config)
+func (s *sftpStorage) newClient() (*sftp.Client, error) {
+	sshClient, err := ssh.Dial("tcp", s.addr, s.sshCfg)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect via SSH: %w", err)
 	}
-	defer client.Close()
-
-	sftpClient, err := sftp.NewClient(client)
+	client, err := sftp.NewClient(sshClient)
 	if err != nil {
+		sshClient.Close()
 		return nil, fmt.Errorf("failed to create SFTP client: %w", err)
 	}
-	defer sftpClient.Close()
-
-	entries, err := sftpClient.ReadDir(path)
-	if err != nil {
-		return nil, fmt.Errorf("failed to list SFTP directory %s: %w", path, err)
-	}
-
-	var fileNames []string
-	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
-		}
-		if matchPattern(entry.Name(), pattern) {
-			fileNames = append(fileNames, entry.Name())
-		}
-	}
-
-	if len(fileNames) == 0 {
-		return nil, fmt.Errorf("no files found on SFTP at %s", path)
-	}
-
-	// Read files in parallel
-	type fileResult struct {
-		rows []Row
-		err  error
-	}
-
-	resultCh := make(chan fileResult, len(fileNames))
-	for _, fileName := range fileNames {
-		go func(fileName string) {
-			client2, err := ssh.Dial("tcp", addr, config)
-			if err != nil {
-				resultCh <- fileResult{err: fmt.Errorf("failed to connect via SSH: %w", err)}
-				return
-			}
-			defer client2.Close()
-
-			sftpClient2, err := sftp.NewClient(client2)
-			if err != nil {
-				resultCh <- fileResult{err: fmt.Errorf("failed to create SFTP client: %w", err)}
-				return
-			}
-			defer sftpClient2.Close()
-
-			filePath := filepath.Join(path, fileName)
-			file, err := sftpClient2.Open(filePath)
-			if err != nil {
-				resultCh <- fileResult{err: fmt.Errorf("failed to open file %s: %w", filePath, err)}
-				return
-			}
-			defer file.Close()
-
-			body, err := io.ReadAll(file)
-			if err != nil {
-				resultCh <- fileResult{err: fmt.Errorf("failed to read file %s: %w", filePath, err)}
-				return
-			}
-
-			switch format {
-			case "csv":
-				rows, err := serde.Decode(context.Background(), "csv", bytes.NewReader(body), tbl.Columns, csvOpts)
-				resultCh <- fileResult{rows: rows, err: err}
-			case "json":
-				rows, err := serde.Decode(context.Background(), "json", bytes.NewReader(body), tbl.Columns, serde.CSVOptions{})
-				resultCh <- fileResult{rows: rows, err: err}
-			default:
-				resultCh <- fileResult{err: fmt.Errorf("unsupported format %q", format)}
-			}
-		}(fileName)
-	}
-
-	var rows []Row
-	for i := 0; i < len(fileNames); i++ {
-		result := <-resultCh
-		if result.err != nil {
-			return nil, result.err
-		}
-		rows = append(rows, result.rows...)
-	}
-
-	return rows, nil
+	return client, nil
 }
 
-// readWebDAVTable reads data from WebDAV
-func readWebDAVTable(tbl *catalog.Table, filters []PartitionFilter) ([]Row, error) {
-	// Try to get URL from either 'url' or individual parameters
+func (s *sftpStorage) resolve(name string) string {
+	if s.root == "" {
+		return name
+	}
+	return s.root + "/" + name
+}
+
+func (s *sftpStorage) Open(ctx context.Context, name string) (File, error) {
+	client, err := s.newClient()
+	if err != nil {
+		return nil, err
+	}
+	filePath := s.resolve(name)
+	f, err := client.Open(filePath)
+	if err != nil {
+		client.Close()
+		return nil, fmt.Errorf("failed to open SFTP file %s: %w", filePath, err)
+	}
+	data, err := io.ReadAll(f)
+	f.Close()
+	client.Close()
+	if err != nil {
+		return nil, fmt.Errorf("failed to read SFTP file %s: %w", filePath, err)
+	}
+	return &sftpReadFile{baseFile: baseFile{}, reader: bytes.NewReader(data), name: name}, nil
+}
+
+func (s *sftpStorage) Stat(ctx context.Context, name string) (FileInfo, error) {
+	client, err := s.newClient()
+	if err != nil {
+		return nil, err
+	}
+	defer client.Close()
+	filePath := s.resolve(name)
+	info, err := client.Stat(filePath)
+	if err != nil {
+		return nil, err
+	}
+	return &baseFileInfo{
+		name:  filepath.Base(name),
+		path:  name,
+		size:  uint64(info.Size()),
+		isDir: info.IsDir(),
+	}, nil
+}
+
+func (s *sftpStorage) Glob(ctx context.Context, pattern string) ([]string, error) {
+	client, err := s.newClient()
+	if err != nil {
+		return nil, err
+	}
+	defer client.Close()
+
+	dir := filepath.Dir(s.resolve("."))
+	entries, err := client.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	var result []string
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		if matchPattern(e.Name(), pattern) {
+			result = append(result, e.Name())
+		}
+	}
+	return result, nil
+}
+
+func (s *sftpStorage) List(ctx context.Context, dirPath string) ([]string, error) {
+	client, err := s.newClient()
+	if err != nil {
+		return nil, err
+	}
+	defer client.Close()
+
+	path := s.resolve(dirPath)
+	entries, err := client.ReadDir(path)
+	if err != nil {
+		return nil, err
+	}
+	var result []string
+	for _, e := range entries {
+		if dirPath == "" || dirPath == "." {
+			result = append(result, e.Name())
+		} else {
+			result = append(result, filepath.Join(dirPath, e.Name()))
+		}
+	}
+	return result, nil
+}
+
+func (s *sftpStorage) Mkdir(ctx context.Context, name string, perm fs.FileMode) error {
+	client, err := s.newClient()
+	if err != nil {
+		return err
+	}
+	defer client.Close()
+	return client.Mkdir(s.resolve(name))
+}
+
+func (s *sftpStorage) MkdirAll(ctx context.Context, name string, perm fs.FileMode) error {
+	client, err := s.newClient()
+	if err != nil {
+		return err
+	}
+	defer client.Close()
+	return client.MkdirAll(s.resolve(name))
+}
+
+func (s *sftpStorage) Remove(ctx context.Context, name string) error {
+	client, err := s.newClient()
+	if err != nil {
+		return err
+	}
+	defer client.Close()
+	return client.Remove(s.resolve(name))
+}
+
+func (s *sftpStorage) RemoveAll(ctx context.Context, name string) error {
+	client, err := s.newClient()
+	if err != nil {
+		return err
+	}
+	defer client.Close()
+	return client.RemoveDirectory(s.resolve(name))
+}
+
+func (s *sftpStorage) WriteFile(ctx context.Context, name string, data []byte, perm fs.FileMode) error {
+	client, err := s.newClient()
+	if err != nil {
+		return err
+	}
+	defer client.Close()
+	filePath := s.resolve(name)
+	f, err := client.Create(filePath)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, err = f.Write(data)
+	return err
+}
+
+func (s *sftpStorage) Rename(ctx context.Context, oldName, newName string) error {
+	client, err := s.newClient()
+	if err != nil {
+		return err
+	}
+	defer client.Close()
+	return client.Rename(s.resolve(oldName), s.resolve(newName))
+}
+
+func (s *sftpStorage) Create(ctx context.Context, name string) (File, error) {
+	return &sftpWriteFile{
+		baseFile: baseFile{},
+		store:    s,
+		name:     name,
+		buf:      &bytes.Buffer{},
+	}, nil
+}
+
+func (s *sftpStorage) Exists(ctx context.Context, name string) bool {
+	client, err := s.newClient()
+	if err != nil {
+		return false
+	}
+	defer client.Close()
+	_, err = client.Stat(s.resolve(name))
+	return err == nil
+}
+
+func (s *sftpStorage) Join(elem ...string) string {
+	return filepath.Join(elem...)
+}
+
+type sftpReadFile struct {
+	baseFile
+	reader *bytes.Reader
+	name   string
+}
+
+func (f *sftpReadFile) Read(p []byte) (int, error) { return f.reader.Read(p) }
+func (f *sftpReadFile) Close() error                { return nil }
+func (f *sftpReadFile) String() string              { return f.name }
+
+type sftpWriteFile struct {
+	baseFile
+	store *sftpStorage
+	name  string
+	buf   *bytes.Buffer
+}
+
+func (f *sftpWriteFile) Write(p []byte) (int, error) { return f.buf.Write(p) }
+func (f *sftpWriteFile) Close() error {
+	client, err := f.store.newClient()
+	if err != nil {
+		return err
+	}
+	defer client.Close()
+	filePath := f.store.resolve(f.name)
+	out, err := client.Create(filePath)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+	_, err = out.Write(f.buf.Bytes())
+	return err
+}
+func (f *sftpWriteFile) String() string { return f.name }
+
+// ---------------------------------------------------------------------------
+// WebDAV Storage
+// ---------------------------------------------------------------------------
+
+type webdavStorage struct {
+	client *gowebdav.Client
+	root   string
+}
+
+func newWebDAVStorage(tbl *catalog.Table) (Storage, error) {
 	rawURL := tbl.Option(urlKey, "")
 	webdavURL := tbl.Option("url", "")
 	user := tbl.Option("username", "")
 	pass := tbl.Option("password", "")
-	path := tbl.Option("path", "")
+	root := tbl.Option("path", "")
 
-	// If URL is provided, parse it to get webdav_url, user, pass, path
 	if rawURL != "" {
 		if u, err := url.Parse(rawURL); err == nil {
-			// Override individual parameters with URL values
 			if webdavURL == "" {
 				webdavURL = fmt.Sprintf("%s://%s%s", u.Scheme, u.Host, u.Path)
 			}
-			if path == "" {
-				path = u.Path
+			if root == "" {
+				root = u.Path
 			}
-			// Parse user and pass from URL if not provided
 			if u.User != nil {
 				if user == "" {
 					user = u.User.Username()
@@ -388,266 +698,161 @@ func readWebDAVTable(tbl *catalog.Table, filters []PartitionFilter) ([]Row, erro
 			}
 		}
 	}
-
 	if webdavURL == "" {
 		webdavURL = rawURL
 	}
 	if webdavURL == "" {
 		return nil, fmt.Errorf("missing url for WebDAV table %s", tbl.Name)
 	}
-	pattern := tbl.Option("file_pattern", "*")
-	format := strings.ToLower(tbl.Option("format", ""))
-	csvOpts := serde.NewCSVOptions(tbl)
-
-	if format == "" {
-		return nil, fmt.Errorf("missing format for table %s", tbl.Name)
-	}
-
 	client := gowebdav.NewClient(webdavURL, user, pass)
+	return &webdavStorage{
+		client: client,
+		root:   strings.TrimSuffix(root, "/"),
+	}, nil
+}
 
-	entries, err := client.ReadDir(path)
-	if err != nil {
-		return nil, fmt.Errorf("failed to list WebDAV directory %s: %w", path, err)
+func (s *webdavStorage) resolve(name string) string {
+	if s.root == "" {
+		return name
 	}
+	return s.root + "/" + name
+}
 
-	var fileNames []string
-	for _, entry := range entries {
-		if entry.IsDir() {
+func (s *webdavStorage) Open(ctx context.Context, name string) (File, error) {
+	data, err := s.client.Read(s.resolve(name))
+	if err != nil {
+		return nil, fmt.Errorf("failed to read WebDAV file %s: %w", name, err)
+	}
+	return &webdavReadFile{baseFile: baseFile{}, reader: bytes.NewReader(data), name: name}, nil
+}
+
+func (s *webdavStorage) Stat(ctx context.Context, name string) (FileInfo, error) {
+	dir := filepath.Dir(s.resolve(name))
+	entries, err := s.client.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	baseName := filepath.Base(name)
+	for _, e := range entries {
+		if e.Name() == baseName {
+			return &baseFileInfo{
+				name:  e.Name(),
+				path:  name,
+				size:  uint64(e.Size()),
+				isDir: e.IsDir(),
+			}, nil
+		}
+	}
+	return nil, fmt.Errorf("file %s not found", name)
+}
+
+func (s *webdavStorage) Glob(ctx context.Context, pattern string) ([]string, error) {
+	entries, err := s.client.ReadDir(s.root)
+	if err != nil {
+		return nil, err
+	}
+	var result []string
+	for _, e := range entries {
+		if e.IsDir() {
 			continue
 		}
-		if matchPattern(entry.Name(), pattern) {
-			fileNames = append(fileNames, entry.Name())
+		if matchPattern(e.Name(), pattern) {
+			result = append(result, e.Name())
 		}
 	}
-
-	if len(fileNames) == 0 {
-		return nil, fmt.Errorf("no files found on WebDAV at %s", path)
-	}
-
-	// Read files in parallel
-	type fileResult struct {
-		rows []Row
-		err  error
-	}
-
-	resultCh := make(chan fileResult, len(fileNames))
-	for _, fileName := range fileNames {
-		go func(fileName string) {
-			filePath := filepath.Join(path, fileName)
-			body, err := client.Read(filePath)
-			if err != nil {
-				resultCh <- fileResult{err: fmt.Errorf("failed to read file %s: %w", filePath, err)}
-				return
-			}
-
-			switch format {
-			case "csv":
-				rows, err := serde.Decode(context.Background(), "csv", bytes.NewReader(body), tbl.Columns, csvOpts)
-				resultCh <- fileResult{rows: rows, err: err}
-			case "json":
-				rows, err := serde.Decode(context.Background(), "json", bytes.NewReader(body), tbl.Columns, serde.CSVOptions{})
-				resultCh <- fileResult{rows: rows, err: err}
-			default:
-				resultCh <- fileResult{err: fmt.Errorf("unsupported format %q", format)}
-			}
-		}(fileName)
-	}
-
-	var rows []Row
-	for i := 0; i < len(fileNames); i++ {
-		result := <-resultCh
-		if result.err != nil {
-			return nil, result.err
-		}
-		rows = append(rows, result.rows...)
-	}
-
-	return rows, nil
+	return result, nil
 }
 
-// writeFTPTable writes data to FTP
-func writeFTPTable(tbl *catalog.Table, rows []Row, appendMode bool) error {
-	rawURL := tbl.Option(urlKey, "")
-	if rawURL == "" {
-		return fmt.Errorf("missing url for table %s", tbl.Name)
-	}
-
-	host, port, path, err := parseRemoteURL(rawURL, "21")
+func (s *webdavStorage) List(ctx context.Context, dirPath string) ([]string, error) {
+	path := s.resolve(dirPath)
+	entries, err := s.client.ReadDir(path)
 	if err != nil {
-		return err
+		return nil, err
 	}
-
-	user := tbl.Option(userKey, "")
-	pass := tbl.Option(passKey, "")
-	fileName := tbl.Option("file_name", "result.csv")
-	format := strings.ToLower(tbl.Option("format", "csv"))
-	csvOpts := serde.NewCSVOptions(tbl)
-
-	if appendMode {
-		fileName = fmt.Sprintf("append_%d_%s", len(rows), fileName)
-	}
-
-	// Generate data
-	var data []byte
-	switch format {
-	case "csv":
-		buf := &bytes.Buffer{}
-		if err := serde.Encode(context.Background(), "csv", rows, tbl.Columns, buf, csvOpts); err != nil {
-			return err
-		}
-		data = buf.Bytes()
-	case "json":
-		buf := &bytes.Buffer{}
-		if err := serde.Encode(context.Background(), "json", rows, tbl.Columns, buf, serde.CSVOptions{}); err != nil {
-			return err
-		}
-		data = buf.Bytes()
-	default:
-		return fmt.Errorf("unsupported write format %q", format)
-	}
-
-	addr := fmt.Sprintf("%s:%s", host, port)
-	conn, err := ftp.DialTimeout(addr, dialTimeout)
-	if err != nil {
-		return fmt.Errorf("failed to connect to FTP %s: %w", addr, err)
-	}
-	defer conn.Quit()
-
-	if user != "" {
-		if err := conn.Login(user, pass); err != nil {
-			return fmt.Errorf("failed to login to FTP: %w", err)
+	var result []string
+	for _, e := range entries {
+		if dirPath == "" || dirPath == "." {
+			result = append(result, e.Name())
+		} else {
+			result = append(result, filepath.Join(dirPath, e.Name()))
 		}
 	}
-
-	if path != "" {
-		if err := conn.ChangeDir(path); err != nil {
-			return fmt.Errorf("failed to change to directory %s: %w", path, err)
-		}
-	}
-
-	if err := conn.Stor(fileName, bytes.NewReader(data)); err != nil {
-		return fmt.Errorf("failed to store file %s on FTP: %w", fileName, err)
-	}
-
-	return nil
+	return result, nil
 }
 
-// writeSFTPTable writes data to SFTP
-func writeSFTPTable(tbl *catalog.Table, rows []Row, appendMode bool) error {
-	rawURL := tbl.Option(urlKey, "")
-	if rawURL == "" {
-		return fmt.Errorf("missing url for table %s", tbl.Name)
-	}
-
-	host, port, path, err := parseRemoteURL(rawURL, "22")
-	if err != nil {
-		return err
-	}
-
-	user := tbl.Option(userKey, "")
-	pass := tbl.Option(passKey, "")
-	fileName := tbl.Option("file_name", "result.csv")
-	format := strings.ToLower(tbl.Option("format", "csv"))
-	csvOpts := serde.NewCSVOptions(tbl)
-
-	if appendMode {
-		fileName = fmt.Sprintf("append_%d_%s", len(rows), fileName)
-	}
-
-	var data []byte
-	switch format {
-	case "csv":
-		buf := &bytes.Buffer{}
-		if err := serde.Encode(context.Background(), "csv", rows, tbl.Columns, buf, csvOpts); err != nil {
-			return err
-		}
-		data = buf.Bytes()
-	case "json":
-		buf := &bytes.Buffer{}
-		if err := serde.Encode(context.Background(), "json", rows, tbl.Columns, buf, serde.CSVOptions{}); err != nil {
-			return err
-		}
-		data = buf.Bytes()
-	default:
-		return fmt.Errorf("unsupported write format %q", format)
-	}
-
-	config := &ssh.ClientConfig{
-		User:            user,
-		Auth:            []ssh.AuthMethod{ssh.Password(pass)},
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
-		Timeout:         dialTimeout,
-	}
-
-	addr := fmt.Sprintf("%s:%s", host, port)
-	client, err := ssh.Dial("tcp", addr, config)
-	if err != nil {
-		return fmt.Errorf("failed to connect via SSH: %w", err)
-	}
-	defer client.Close()
-
-	sftpClient, err := sftp.NewClient(client)
-	if err != nil {
-		return fmt.Errorf("failed to create SFTP client: %w", err)
-	}
-	defer sftpClient.Close()
-
-	filePath := filepath.Join(path, fileName)
-	file, err := sftpClient.Create(filePath)
-	if err != nil {
-		return fmt.Errorf("failed to create file %s on SFTP: %w", filePath, err)
-	}
-	defer file.Close()
-
-	if _, err := file.Write(data); err != nil {
-		return fmt.Errorf("failed to write to file %s on SFTP: %w", filePath, err)
-	}
-
-	return nil
+func (s *webdavStorage) Mkdir(ctx context.Context, name string, perm fs.FileMode) error {
+	return s.client.Mkdir(s.resolve(name), perm)
 }
 
-// writeWebDAVTable writes data to WebDAV
-func writeWebDAVTable(tbl *catalog.Table, rows []Row, appendMode bool) error {
-	rawURL := tbl.Option(urlKey, "")
-	if rawURL == "" {
-		return fmt.Errorf("missing url for table %s", tbl.Name)
-	}
-
-	user := tbl.Option(userKey, "")
-	pass := tbl.Option(passKey, "")
-	path := tbl.Option(pathKey, "")
-	fileName := tbl.Option("file_name", "result.csv")
-	format := strings.ToLower(tbl.Option("format", "csv"))
-	csvOpts := serde.NewCSVOptions(tbl)
-
-	if appendMode {
-		fileName = fmt.Sprintf("append_%d_%s", len(rows), fileName)
-	}
-
-	var data []byte
-	switch format {
-	case "csv":
-		buf := &bytes.Buffer{}
-		if err := serde.Encode(context.Background(), "csv", rows, tbl.Columns, buf, csvOpts); err != nil {
-			return err
-		}
-		data = buf.Bytes()
-	case "json":
-		buf := &bytes.Buffer{}
-		if err := serde.Encode(context.Background(), "json", rows, tbl.Columns, buf, serde.CSVOptions{}); err != nil {
-			return err
-		}
-		data = buf.Bytes()
-	default:
-		return fmt.Errorf("unsupported write format %q", format)
-	}
-
-	client := gowebdav.NewClient(rawURL, user, pass)
-	filePath := filepath.Join(path, fileName)
-
-	if err := client.Write(filePath, data, 0644); err != nil {
-		return fmt.Errorf("failed to write file %s to WebDAV: %w", filePath, err)
-	}
-
-	return nil
+func (s *webdavStorage) MkdirAll(ctx context.Context, name string, perm fs.FileMode) error {
+	return s.client.MkdirAll(s.resolve(name), perm)
 }
+
+func (s *webdavStorage) Remove(ctx context.Context, name string) error {
+	return s.client.Remove(s.resolve(name))
+}
+
+func (s *webdavStorage) RemoveAll(ctx context.Context, name string) error {
+	return s.client.RemoveAll(s.resolve(name))
+}
+
+func (s *webdavStorage) WriteFile(ctx context.Context, name string, data []byte, perm fs.FileMode) error {
+	return s.client.Write(s.resolve(name), data, perm)
+}
+
+func (s *webdavStorage) Rename(ctx context.Context, oldName, newName string) error {
+	return s.client.Rename(s.resolve(oldName), s.resolve(newName), true)
+}
+
+func (s *webdavStorage) Create(ctx context.Context, name string) (File, error) {
+	return &webdavWriteFile{
+		baseFile: baseFile{},
+		client:   s.client,
+		path:     s.resolve(name),
+		buf:      &bytes.Buffer{},
+	}, nil
+}
+
+func (s *webdavStorage) Exists(ctx context.Context, name string) bool {
+	dir := filepath.Dir(s.resolve(name))
+	entries, err := s.client.ReadDir(dir)
+	if err != nil {
+		return false
+	}
+	baseName := filepath.Base(name)
+	for _, e := range entries {
+		if e.Name() == baseName {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *webdavStorage) Join(elem ...string) string {
+	return filepath.Join(elem...)
+}
+
+type webdavReadFile struct {
+	baseFile
+	reader *bytes.Reader
+	name   string
+}
+
+func (f *webdavReadFile) Read(p []byte) (int, error) { return f.reader.Read(p) }
+func (f *webdavReadFile) Close() error                { return nil }
+func (f *webdavReadFile) String() string              { return f.name }
+
+type webdavWriteFile struct {
+	baseFile
+	client *gowebdav.Client
+	path   string
+	buf    *bytes.Buffer
+}
+
+func (f *webdavWriteFile) Write(p []byte) (int, error) { return f.buf.Write(p) }
+func (f *webdavWriteFile) Close() error {
+	return f.client.Write(f.path, f.buf.Bytes(), 0644)
+}
+func (f *webdavWriteFile) String() string { return f.path }
+
+

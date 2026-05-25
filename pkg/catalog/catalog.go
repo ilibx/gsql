@@ -7,6 +7,10 @@ import (
 	"sync"
 )
 
+// DebugLevel controls the verbosity of debug output.
+// 0 = silent, 1 = basic info, 2+ = more detail.
+var DebugLevel int
+
 // Table defines a logical table and its data source options.
 type Table struct {
 	Name          string
@@ -35,10 +39,14 @@ func (c *Catalog) CreateTable(tbl *Table) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	
-	fmt.Printf("DEBUG: Creating table %s with options: %v\n", tbl.Name, tbl.WithOptions)
+	if DebugLevel > 0 {
+		fmt.Printf("DEBUG: Creating table %s with options: %v\n", tbl.Name, tbl.WithOptions)
+	}
 	// Parse URL and automatically fill in storage-related parameters
 	parseStorageURL(tbl)
-	fmt.Printf("DEBUG: After URL parsing, options: %v\n", tbl.WithOptions)
+	if DebugLevel > 0 {
+		fmt.Printf("DEBUG: After URL parsing, options: %v\n", tbl.WithOptions)
+	}
 	
 	key := normalizeName(tbl.Name)
 	if _, exists := c.tables[key]; exists {
@@ -87,7 +95,9 @@ func parseStorageURL(tbl *Table) {
     if !hasURL {
         return // No URL parameter, keep original logic
     }
-    fmt.Printf("DEBUG: Parsing URL: %s\n", urlStr)
+    if DebugLevel > 0 {
+        fmt.Printf("DEBUG: Parsing URL: %s\n", urlStr)
+    }
     
     parsed, err := url.Parse(urlStr)
     if err != nil {

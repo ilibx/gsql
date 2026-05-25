@@ -4,26 +4,22 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
+	"io/fs"
 	"net/url"
 	"path"
 	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
-	"github.com/aws/aws-sdk-go-v2/feature/s3/manager"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/ilibx/gsql/pkg/catalog"
-	"github.com/ilibx/gsql/pkg/serde"
 )
 
-// S3 storage option keys (without s3_ prefix)
-const (
-	s3URLKey      = "url"
-	s3RegionKey   = "region"
-	s3EndpointKey = "endpoint"
-	s3Timeout     = 30 * time.Second
-)
+const s3Timeout = 30 * time.Second
 
 // parseS3URL extracts bucket and prefix from an S3 URL like s3://bucket/prefix.
 func parseS3URL(rawURL string) (bucket, prefix string, err error) {
@@ -42,20 +38,22 @@ func parseS3URL(rawURL string) (bucket, prefix string, err error) {
 	return bucket, prefix, nil
 }
 
-// readS3Table reads data from S3
-func readS3Table(tbl *catalog.Table, filters []PartitionFilter) ([]Row, error) {
-	// Try to get URL from either 'url' or individual parameters
-	rawURL := tbl.Option(s3URLKey, "")
+type s3Storage struct {
+	client *s3.Client
+	bucket string
+	prefix string
+}
+
+func newS3Storage(tbl *catalog.Table) (Storage, error) {
+	rawURL := tbl.Option("url", "")
 	bucket := tbl.Option("bucket", "")
 	prefix := tbl.Option("prefix", "")
 
-	// If URL is provided, parse it to get bucket and prefix
 	if rawURL != "" {
 		parsedBucket, parsedPrefix, err := parseS3URL(rawURL)
 		if err != nil {
 			return nil, err
 		}
-		// Override individual parameters with URL values
 		if bucket == "" {
 			bucket = parsedBucket
 		}
@@ -63,7 +61,6 @@ func readS3Table(tbl *catalog.Table, filters []PartitionFilter) ([]Row, error) {
 			prefix = parsedPrefix
 		}
 	}
-
 	if bucket == "" {
 		return nil, fmt.Errorf("missing bucket for S3 table %s", tbl.Name)
 	}
@@ -75,176 +72,316 @@ func readS3Table(tbl *catalog.Table, filters []PartitionFilter) ([]Row, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to load AWS config: %w", err)
 	}
-
-	if region := tbl.Option(s3RegionKey, ""); region != "" {
+	if region := tbl.Option("region", ""); region != "" {
 		cfg.Region = region
 	}
 
-	var s3Client *s3.Client
-	if endpoint := tbl.Option(s3EndpointKey, ""); endpoint != "" {
-		opts := []func(*s3.Options){
-			func(o *s3.Options) {
-				o.BaseEndpoint = &endpoint
-			},
-		}
-		s3Client = s3.NewFromConfig(cfg, opts...)
+	var client *s3.Client
+	if endpoint := tbl.Option("endpoint", ""); endpoint != "" {
+		client = s3.NewFromConfig(cfg, func(o *s3.Options) {
+			o.BaseEndpoint = &endpoint
+		})
 	} else {
-		s3Client = s3.NewFromConfig(cfg)
+		client = s3.NewFromConfig(cfg)
 	}
 
-	pattern := tbl.Option("file_pattern", "*")
-	format := strings.ToLower(tbl.Option("format", ""))
+	return &s3Storage{client: client, bucket: bucket, prefix: prefix}, nil
+}
 
-	if format == "" {
-		return nil, fmt.Errorf("missing format for table %s", tbl.Name)
+func (s *s3Storage) resolveKey(name string) string {
+	name = path.Clean(name)
+	if name == "." || name == "" {
+		return s.prefix
 	}
+	if s.prefix == "" {
+		return name
+	}
+	return s.prefix + "/" + name
+}
 
+func (s *s3Storage) relKey(key string) string {
+	if s.prefix == "" {
+		return key
+	}
+	rel := strings.TrimPrefix(key, s.prefix+"/")
+	if rel == key {
+		rel = strings.TrimPrefix(key, s.prefix)
+	}
+	return strings.TrimPrefix(rel, "/")
+}
+
+func (s *s3Storage) Open(ctx context.Context, name string) (File, error) {
+	key := s.resolveKey(name)
+	obj, err := s.client.GetObject(ctx, &s3.GetObjectInput{
+		Bucket: &s.bucket,
+		Key:    &key,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to open S3 object %s: %w", name, err)
+	}
+	return &s3ReadFile{baseFile: baseFile{}, body: obj.Body, key: key}, nil
+}
+
+func (s *s3Storage) Stat(ctx context.Context, name string) (FileInfo, error) {
+	key := s.resolveKey(name)
+	obj, err := s.client.HeadObject(ctx, &s3.HeadObjectInput{
+		Bucket: &s.bucket,
+		Key:    &key,
+	})
+	if err != nil {
+		// Check if it's a "directory" prefix
+		dirKey := key + "/"
+		result, listErr := s.client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
+			Bucket:  &s.bucket,
+			Prefix:  &dirKey,
+			MaxKeys: aws.Int32(1),
+		})
+		if listErr != nil || len(result.Contents) == 0 {
+			return nil, fmt.Errorf("failed to stat %s: %w", name, err)
+		}
+		return &baseFileInfo{
+			name:  filepath.Base(name),
+			path:  name,
+			isDir: true,
+		}, nil
+	}
+	return &baseFileInfo{
+		name:    filepath.Base(name),
+		path:    name,
+		size:    uint64(*obj.ContentLength),
+		modTime: *obj.LastModified,
+	}, nil
+}
+
+func (s *s3Storage) Glob(ctx context.Context, pattern string) ([]string, error) {
+	prefix := s.resolveKey("")
+	// List all objects under the prefix
 	var keys []string
-	paginator := s3.NewListObjectsV2Paginator(s3Client, &s3.ListObjectsV2Input{
-		Bucket: &bucket,
+	paginator := s3.NewListObjectsV2Paginator(s.client, &s3.ListObjectsV2Input{
+		Bucket: &s.bucket,
 		Prefix: &prefix,
 	})
-
 	for paginator.HasMorePages() {
 		page, err := paginator.NextPage(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("failed to list S3 objects: %w", err)
 		}
-
 		for _, obj := range page.Contents {
-			key := *obj.Key
-			if matchPattern(path.Base(key), pattern) {
-				keys = append(keys, key)
+			relKey := s.relKey(*obj.Key)
+			if relKey == "" {
+				continue
+			}
+			if matchPattern(path.Base(relKey), pattern) {
+				keys = append(keys, relKey)
 			}
 		}
 	}
-
-	if len(keys) == 0 {
-		return nil, fmt.Errorf("no files found in S3 bucket %s with prefix %s", bucket, prefix)
-	}
-
-	// Read files in parallel using streaming reads
-	type fileResult struct {
-		rows []Row
-		err  error
-	}
-
-	resultCh := make(chan fileResult, len(keys))
-	for _, key := range keys {
-		go func(key string) {
-			obj, err := s3Client.GetObject(ctx, &s3.GetObjectInput{
-				Bucket: &bucket,
-				Key:    &key,
-			})
-			if err != nil {
-				resultCh <- fileResult{err: fmt.Errorf("failed to get S3 object %s: %w", key, err)}
-				return
-			}
-			defer obj.Body.Close()
-
-			switch format {
-			case "csv":
-				csvOpts := serde.NewCSVOptions(tbl)
-				rows, err := serde.Decode(ctx, "csv", obj.Body, tbl.Columns, csvOpts)
-				resultCh <- fileResult{rows: rows, err: err}
-			case "json":
-				rows, err := serde.Decode(ctx, "json", obj.Body, tbl.Columns, serde.CSVOptions{})
-				resultCh <- fileResult{rows: rows, err: err}
-			default:
-				resultCh <- fileResult{err: fmt.Errorf("unsupported format %q", format)}
-			}
-		}(key)
-	}
-
-	var rows []Row
-	for i := 0; i < len(keys); i++ {
-		result := <-resultCh
-		if result.err != nil {
-			return nil, result.err
-		}
-		rows = append(rows, result.rows...)
-	}
-
-	return rows, nil
+	return keys, nil
 }
 
-// writeS3Table writes data to S3
-func writeS3Table(tbl *catalog.Table, rows []Row, appendMode bool) error {
-	rawURL := tbl.Option(s3URLKey, "")
-	if rawURL == "" {
-		return fmt.Errorf("missing url for table %s", tbl.Name)
+func (s *s3Storage) List(ctx context.Context, dirPath string) ([]string, error) {
+	key := s.resolveKey(dirPath)
+	if key != "" {
+		key += "/"
 	}
 
-	bucket, prefix, err := parseS3URL(rawURL)
+	result, err := s.client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
+		Bucket:    &s.bucket,
+		Prefix:    &key,
+		Delimiter: aws.String("/"),
+	})
 	if err != nil {
-		return err
+		return nil, fmt.Errorf("failed to list S3 objects: %w", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), s3Timeout)
-	defer cancel()
-
-	cfg, err := config.LoadDefaultConfig(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to load AWS config: %w", err)
-	}
-
-	if region := tbl.Option(s3RegionKey, ""); region != "" {
-		cfg.Region = region
-	}
-
-	var s3Client *s3.Client
-	if endpoint := tbl.Option(s3EndpointKey, ""); endpoint != "" {
-		opts := []func(*s3.Options){
-			func(o *s3.Options) {
-				o.BaseEndpoint = &endpoint
-			},
+	var entries []string
+	for _, cp := range result.CommonPrefixes {
+		rel := strings.TrimPrefix(*cp.Prefix, key)
+		rel = strings.TrimSuffix(rel, "/")
+		if strings.Contains(rel, "/") {
+			continue
 		}
-		s3Client = s3.NewFromConfig(cfg, opts...)
-	} else {
-		s3Client = s3.NewFromConfig(cfg)
+		if dirPath == "" || dirPath == "." {
+			entries = append(entries, rel)
+		} else {
+			entries = append(entries, filepath.Join(dirPath, rel))
+		}
 	}
-
-	fileName := tbl.Option("file_name", "result.csv")
-	format := strings.ToLower(tbl.Option("format", "csv"))
-	csvOpts := serde.NewCSVOptions(tbl)
-
-	if appendMode {
-		fileName = fmt.Sprintf("append_%d_%s", len(rows), fileName)
+	for _, obj := range result.Contents {
+		rel := strings.TrimPrefix(*obj.Key, key)
+		if rel == "" {
+			continue
+		}
+		if strings.Contains(rel, "/") {
+			continue
+		}
+		if dirPath == "" || dirPath == "." {
+			entries = append(entries, rel)
+		} else {
+			entries = append(entries, filepath.Join(dirPath, rel))
+		}
 	}
+	return entries, nil
+}
 
-	key := path.Join(prefix, fileName)
+func (s *s3Storage) Mkdir(ctx context.Context, name string, perm fs.FileMode) error {
+	return nil
+}
 
-	var data []byte
-	switch format {
-	case "csv":
-		buf := &bytes.Buffer{}
-		if err := serde.Encode(ctx, "csv", rows, tbl.Columns, buf, csvOpts); err != nil {
+func (s *s3Storage) MkdirAll(ctx context.Context, name string, perm fs.FileMode) error {
+	return nil
+}
+
+func (s *s3Storage) Remove(ctx context.Context, name string) error {
+	key := s.resolveKey(name)
+	_, err := s.client.DeleteObject(ctx, &s3.DeleteObjectInput{
+		Bucket: &s.bucket,
+		Key:    &key,
+	})
+	return err
+}
+
+func (s *s3Storage) RemoveAll(ctx context.Context, name string) error {
+	key := s.resolveKey(name)
+	var toDelete []string
+	paginator := s3.NewListObjectsV2Paginator(s.client, &s3.ListObjectsV2Input{
+		Bucket: &s.bucket,
+		Prefix: &key,
+	})
+	for paginator.HasMorePages() {
+		page, err := paginator.NextPage(ctx)
+		if err != nil {
 			return err
 		}
-		data = buf.Bytes()
-	case "json":
-		buf := &bytes.Buffer{}
-		if err := serde.Encode(ctx, "json", rows, tbl.Columns, buf, serde.CSVOptions{}); err != nil {
+		for _, obj := range page.Contents {
+			toDelete = append(toDelete, *obj.Key)
+		}
+	}
+	if len(toDelete) == 0 {
+		return nil
+	}
+	// Delete in batches of 1000 (S3 limit)
+	for i := 0; i < len(toDelete); i += 1000 {
+		end := i + 1000
+		if end > len(toDelete) {
+			end = len(toDelete)
+		}
+		batch := toDelete[i:end]
+		objects := make([]types.ObjectIdentifier, len(batch))
+		for j, k := range batch {
+			objects[j] = types.ObjectIdentifier{Key: &k}
+		}
+		_, err := s.client.DeleteObjects(ctx, &s3.DeleteObjectsInput{
+			Bucket: &s.bucket,
+			Delete: &types.Delete{Objects: objects},
+		})
+		if err != nil {
 			return err
 		}
-		data = buf.Bytes()
-	default:
-		return fmt.Errorf("unsupported write format %q", format)
 	}
+	return nil
+}
 
-	uploader := manager.NewUploader(s3Client)
-	_, err = uploader.Upload(ctx, &s3.PutObjectInput{
-		Bucket: &bucket,
+func (s *s3Storage) WriteFile(ctx context.Context, name string, data []byte, perm fs.FileMode) error {
+	key := s.resolveKey(name)
+	_, err := s.client.PutObject(ctx, &s3.PutObjectInput{
+		Bucket: &s.bucket,
 		Key:    &key,
 		Body:   bytes.NewReader(data),
 	})
-
-	if err != nil {
-		return fmt.Errorf("failed to write to S3: %w", err)
-	}
-
-	return nil
+	return err
 }
+
+func (s *s3Storage) Rename(ctx context.Context, oldName, newName string) error {
+	oldKey := s.resolveKey(oldName)
+	newKey := s.resolveKey(newName)
+
+	// S3 doesn't have rename; must copy then delete
+	_, err := s.client.CopyObject(ctx, &s3.CopyObjectInput{
+		Bucket:     &s.bucket,
+		CopySource: aws.String(s.bucket + "/" + oldKey),
+		Key:        &newKey,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to copy S3 object: %w", err)
+	}
+	_, err = s.client.DeleteObject(ctx, &s3.DeleteObjectInput{
+		Bucket: &s.bucket,
+		Key:    &oldKey,
+	})
+	return err
+}
+
+func (s *s3Storage) Create(ctx context.Context, name string) (File, error) {
+	key := s.resolveKey(name)
+	return &s3WriteFile{
+		baseFile: baseFile{},
+		client:   s.client,
+		bucket:   s.bucket,
+		key:      key,
+		buf:      &bytes.Buffer{},
+	}, nil
+}
+
+func (s *s3Storage) Exists(ctx context.Context, name string) bool {
+	key := s.resolveKey(name)
+	_, err := s.client.HeadObject(ctx, &s3.HeadObjectInput{
+		Bucket: &s.bucket,
+		Key:    &key,
+	})
+	if err == nil {
+		return true
+	}
+	// Check as directory prefix
+	dirKey := key + "/"
+	result, err := s.client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
+		Bucket:  &s.bucket,
+		Prefix:  &dirKey,
+		MaxKeys: aws.Int32(1),
+	})
+	return err == nil && len(result.Contents) > 0
+}
+
+func (s *s3Storage) Join(elem ...string) string {
+	return path.Join(elem...)
+}
+
+// s3ReadFile implements File for reading S3 objects.
+type s3ReadFile struct {
+	baseFile
+	body io.ReadCloser
+	key  string
+}
+
+func (f *s3ReadFile) Read(p []byte) (int, error)  { return f.body.Read(p) }
+func (f *s3ReadFile) Close() error                 { return f.body.Close() }
+func (f *s3ReadFile) String() string               { return f.key }
+
+// s3WriteFile implements File for writing to S3 (buffered upload).
+type s3WriteFile struct {
+	baseFile
+	client *s3.Client
+	bucket string
+	key    string
+	buf    *bytes.Buffer
+}
+
+func (f *s3WriteFile) Write(p []byte) (int, error) { return f.buf.Write(p) }
+
+func (f *s3WriteFile) Close() error {
+	if f.buf == nil {
+		return nil
+	}
+	_, err := f.client.PutObject(context.Background(), &s3.PutObjectInput{
+		Bucket: &f.bucket,
+		Key:    &f.key,
+		Body:   bytes.NewReader(f.buf.Bytes()),
+	})
+	f.buf = nil
+	return err
+}
+
+func (f *s3WriteFile) String() string { return f.key }
 
 // Helper functions
 

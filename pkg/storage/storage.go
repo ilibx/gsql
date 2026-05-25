@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ilibx/gsql/pkg/catalog"
 	"github.com/ilibx/gsql/pkg/serde"
 )
 
@@ -343,3 +344,71 @@ func (fi *localFileInfo) IsDir() bool {
 func (fi *localFileInfo) Metadata() map[string]string {
 	return map[string]string{}
 }
+
+// GetStorage returns a Storage implementation for the given table.
+func GetStorage(tbl *catalog.Table) (Storage, error) {
+	storageType := strings.ToLower(tbl.Option("storage", "local"))
+	switch storageType {
+	case "", "local":
+		location := tbl.Option("location", "")
+		if location == "" {
+			rawURL := tbl.Option("url", "")
+			if rawURL != "" {
+				if parsed, err := url.Parse(rawURL); err == nil && parsed.Scheme == "local" {
+					location = parsed.Path
+				}
+			}
+			if location == "" {
+				return nil, fmt.Errorf("missing location for table %s", tbl.Name)
+			}
+		}
+		return NewLocalStorage(location), nil
+	case "s3":
+		return newS3Storage(tbl)
+	case "ftp":
+		return newFTPStorage(tbl)
+	case "sftp":
+		return newSFTPStorage(tbl)
+	case "webdav":
+		return newWebDAVStorage(tbl)
+	case "git-lfs", "gitlfs":
+		return newGitLFSStorage(tbl)
+	default:
+		return nil, fmt.Errorf("unsupported storage type %q", storageType)
+	}
+}
+
+// baseFile provides stub implementations for File interface methods.
+// Backend-specific file types embed this and override the methods they support.
+type baseFile struct{}
+
+func (f *baseFile) Read(p []byte) (int, error)              { return 0, fmt.Errorf("Read not supported") }
+func (f *baseFile) ReadAt(p []byte, off int64) (int, error) { return 0, fmt.Errorf("ReadAt not supported") }
+func (f *baseFile) Seek(offset int64, whence int) (int64, error) {
+	return 0, fmt.Errorf("Seek not supported")
+}
+func (f *baseFile) Close() error                             { return fmt.Errorf("Close not supported") }
+func (f *baseFile) Write(p []byte) (int, error)              { return 0, fmt.Errorf("Write not supported") }
+func (f *baseFile) Truncate(ctx context.Context, size int64) error { return fmt.Errorf("Truncate not supported") }
+func (f *baseFile) CopyTo(ctx context.Context, file File) error    { return fmt.Errorf("CopyTo not supported") }
+func (f *baseFile) Stat(ctx context.Context) (FileInfo, error)     { return nil, fmt.Errorf("Stat not supported") }
+func (f *baseFile) Touch(ctx context.Context) error                 { return fmt.Errorf("Touch not supported") }
+func (f *baseFile) String() string                                 { return "" }
+
+// baseFileInfo provides a reusable FileInfo implementation.
+type baseFileInfo struct {
+	name     string
+	path     string
+	size     uint64
+	modTime  time.Time
+	isDir    bool
+	metadata map[string]string
+}
+
+func (fi *baseFileInfo) LastModified() *time.Time     { return &fi.modTime }
+func (fi *baseFileInfo) Size() uint64                  { return fi.size }
+func (fi *baseFileInfo) Path() string                  { return fi.path }
+func (fi *baseFileInfo) Url() string                   { return fi.path }
+func (fi *baseFileInfo) Name() string                  { return fi.name }
+func (fi *baseFileInfo) IsDir() bool                   { return fi.isDir }
+func (fi *baseFileInfo) Metadata() map[string]string   { return fi.metadata }

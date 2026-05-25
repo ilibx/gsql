@@ -7,12 +7,13 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/ilibx/gsql/pkg/catalog"
-	"github.com/ilibx/gsql/pkg/serde"
 )
 
 // Git LFS storage constants
@@ -29,208 +30,202 @@ type lfsPointer struct {
 	Algorithm string
 }
 
-// readGitLFSTable reads data from Git LFS
-func readGitLFSTable(tbl *catalog.Table, filters []PartitionFilter) ([]Row, error) {
-	// Try to get path from either 'path'/'repo' or individual parameters
+type gitlfsStorage struct {
+	local        Storage
+	basePath     string
+	lfsCachePath string
+}
+
+func newGitLFSStorage(tbl *catalog.Table) (Storage, error) {
 	repoPath := tbl.Option(gitLFSRepoKey, "")
 	lfsPath := tbl.Option(gitLFSPathKey, "")
 	path := tbl.Option("path", "")
 	repo := tbl.Option("repo", "")
-
-	// Override individual parameters with path/repo values
 	if path != "" {
 		lfsPath = path
 	}
 	if repo != "" {
 		repoPath = repo
 	}
-
 	if repoPath == "" && lfsPath == "" {
 		return nil, fmt.Errorf("missing git_lfs_repo or git_lfs_path for table %s", tbl.Name)
 	}
-
-	pattern := tbl.Option("file_pattern", "*")
-	format := strings.ToLower(tbl.Option("format", ""))
-	csvOpts := serde.NewCSVOptions(tbl)
-
-	if format == "" {
-		return nil, fmt.Errorf("missing format for table %s", tbl.Name)
-	}
-
-	// Determine source path and LFS object storage path
 	var sourcePath, lfsCachePath string
 	if repoPath != "" {
-		// When using repo, read from repo directory and use its LFS cache
 		sourcePath = repoPath
 		lfsCachePath = filepath.Join(repoPath, ".git", "lfs", "objects")
 	} else {
-		// When using direct LFS path, use it for both
 		sourcePath = lfsPath
 		lfsCachePath = lfsPath
 	}
-
-	// List files that match the pattern
-	var fileNames []string
-	if entries, err := os.ReadDir(sourcePath); err == nil {
-		for _, entry := range entries {
-			if entry.IsDir() {
-				continue
-			}
-			if matchPattern(entry.Name(), pattern) {
-				fileNames = append(fileNames, entry.Name())
-			}
-		}
-	}
-
-	if len(fileNames) == 0 {
-		return nil, fmt.Errorf("no files found in Git LFS at %s", sourcePath)
-	}
-
-	// Read files in parallel
-	type fileResult struct {
-		rows []Row
-		err  error
-	}
-
-	resultCh := make(chan fileResult, len(fileNames))
-	for _, fileName := range fileNames {
-		go func(fileName string) {
-			filePath := filepath.Join(sourcePath, fileName)
-			data, err := readGitLFSFile(filePath, lfsCachePath)
-			if err != nil {
-				resultCh <- fileResult{err: fmt.Errorf("failed to read Git LFS file %s: %w", fileName, err)}
-				return
-			}
-
-			switch format {
-			case "csv":
-				rows, err := serde.Decode(context.Background(), "csv", bytes.NewReader(data), tbl.Columns, csvOpts)
-				resultCh <- fileResult{rows: rows, err: err}
-			case "json":
-				rows, err := serde.Decode(context.Background(), "json", bytes.NewReader(data), tbl.Columns, serde.CSVOptions{})
-				resultCh <- fileResult{rows: rows, err: err}
-			default:
-				resultCh <- fileResult{err: fmt.Errorf("unsupported format %q", format)}
-			}
-		}(fileName)
-	}
-
-	var rows []Row
-	for i := 0; i < len(fileNames); i++ {
-		result := <-resultCh
-		if result.err != nil {
-			return nil, result.err
-		}
-		rows = append(rows, result.rows...)
-	}
-
-	return rows, nil
+	return &gitlfsStorage{
+		local:        NewLocalStorage(sourcePath),
+		basePath:     sourcePath,
+		lfsCachePath: lfsCachePath,
+	}, nil
 }
 
-// writeGitLFSTable writes data to Git LFS
-func writeGitLFSTable(tbl *catalog.Table, rows []Row, appendMode bool) error {
-	repoPath := tbl.Option(gitLFSRepoKey, "")
-	lfsPath := tbl.Option(gitLFSPathKey, "")
-
-	if repoPath == "" && lfsPath == "" {
-		return fmt.Errorf("missing git_lfs_repo or git_lfs_path for table %s", tbl.Name)
+func (s *gitlfsStorage) resolvePath(name string) string {
+	name = filepath.Clean(name)
+	if filepath.IsAbs(name) {
+		return name
 	}
-
-	fileName := tbl.Option("file_name", "result.csv")
-	format := strings.ToLower(tbl.Option("format", "csv"))
-	csvOpts := serde.NewCSVOptions(tbl)
-
-	if appendMode {
-		fileName = fmt.Sprintf("append_%d_%s", len(rows), fileName)
-	}
-
-	// Generate data
-	var data []byte
-	switch format {
-	case "csv":
-		buf := &bytes.Buffer{}
-		if err := serde.Encode(context.Background(), "csv", rows, tbl.Columns, buf, csvOpts); err != nil {
-			return err
-		}
-		data = buf.Bytes()
-	case "json":
-		buf := &bytes.Buffer{}
-		if err := serde.Encode(context.Background(), "json", rows, tbl.Columns, buf, serde.CSVOptions{}); err != nil {
-			return err
-		}
-		data = buf.Bytes()
-	default:
-		return fmt.Errorf("unsupported write format %q", format)
-	}
-
-	// Determine LFS object storage path and working directory
-	var lfsCachePath, workDir string
-	if repoPath != "" {
-		lfsCachePath = filepath.Join(repoPath, ".git", "lfs", "objects")
-		workDir = repoPath
-	} else {
-		lfsCachePath = lfsPath
-		workDir = filepath.Dir(lfsPath)
-	}
-
-	// Ensure directories exist
-	if err := os.MkdirAll(workDir, 0o755); err != nil {
-		return err
-	}
-
-	// Write Git LFS file
-	outPath := filepath.Join(workDir, fileName)
-	if err := os.WriteFile(outPath, data, 0o644); err != nil {
-		return fmt.Errorf("failed to write file %s: %w", outPath, err)
-	}
-
-	// Store actual data in LFS cache
-	hash := sha256.Sum256(data)
-	oid := hex.EncodeToString(hash[:])
-	lfsObjPath := filepath.Join(lfsCachePath, oid[:2], oid[2:])
-
-	if err := os.MkdirAll(filepath.Dir(lfsObjPath), 0o755); err != nil {
-		return err
-	}
-
-	if err := os.WriteFile(lfsObjPath, data, 0o644); err != nil {
-		return fmt.Errorf("failed to write LFS object %s: %w", lfsObjPath, err)
-	}
-
-	// Write pointer file
-	pointer := formatLFSPointer(oid, int64(len(data)))
-	pointerPath := filepath.Join(workDir, fileName+".pointer")
-	if err := os.WriteFile(pointerPath, []byte(pointer), 0o644); err != nil {
-		return fmt.Errorf("failed to write LFS pointer %s: %w", pointerPath, err)
-	}
-
-	return nil
+	return filepath.Join(s.basePath, name)
 }
 
-// Helper functions
+// --- Storage interface delegation ---
 
-func readGitLFSFile(filePath, lfsCachePath string) ([]byte, error) {
-	// Try to read as LFS pointer file first
-	content, err := os.ReadFile(filePath)
+func (s *gitlfsStorage) Open(ctx context.Context, name string) (File, error) {
+	f, err := s.local.Open(ctx, name)
 	if err != nil {
 		return nil, err
 	}
-
-	// Check if it's an LFS pointer file
-	if isLFSPointer(content) {
-		pointer, err := parseLFSPointer(content)
+	defer f.Close()
+	data, err := io.ReadAll(f)
+	if err != nil {
+		return nil, err
+	}
+	if isLFSPointer(data) {
+		ptr, err := parseLFSPointer(data)
 		if err != nil {
 			return nil, err
 		}
-
-		// Read from LFS cache
-		lfsObjPath := filepath.Join(lfsCachePath, pointer.OID[:2], pointer.OID[2:])
-		return os.ReadFile(lfsObjPath)
+		lfsPath := filepath.Join(s.lfsCachePath, ptr.OID[:2], ptr.OID[2:])
+		resolved, err := os.ReadFile(lfsPath)
+		if err != nil {
+			return nil, err
+		}
+		return &gitlfsReadFile{r: bytes.NewReader(resolved)}, nil
 	}
-
-	// If not a pointer file, assume it's the actual data
-	return content, nil
+	return &gitlfsReadFile{r: bytes.NewReader(data)}, nil
 }
+
+func (s *gitlfsStorage) Stat(ctx context.Context, name string) (FileInfo, error) {
+	return s.local.Stat(ctx, name)
+}
+
+func (s *gitlfsStorage) Glob(ctx context.Context, pattern string) ([]string, error) {
+	return s.local.Glob(ctx, pattern)
+}
+
+func (s *gitlfsStorage) List(ctx context.Context, path string) ([]string, error) {
+	return s.local.List(ctx, path)
+}
+
+func (s *gitlfsStorage) Mkdir(ctx context.Context, name string, perm fs.FileMode) error {
+	return s.local.Mkdir(ctx, name, perm)
+}
+
+func (s *gitlfsStorage) MkdirAll(ctx context.Context, name string, perm fs.FileMode) error {
+	return s.local.MkdirAll(ctx, name, perm)
+}
+
+func (s *gitlfsStorage) Remove(ctx context.Context, name string) error {
+	return s.local.Remove(ctx, name)
+}
+
+func (s *gitlfsStorage) RemoveAll(ctx context.Context, name string) error {
+	return s.local.RemoveAll(ctx, name)
+}
+
+func (s *gitlfsStorage) WriteFile(ctx context.Context, name string, data []byte, perm fs.FileMode) error {
+	resolved := s.resolvePath(name)
+	if err := os.MkdirAll(filepath.Dir(resolved), perm); err != nil {
+		return err
+	}
+	hash := sha256.Sum256(data)
+	oid := hex.EncodeToString(hash[:])
+	lfsPath := filepath.Join(s.lfsCachePath, oid[:2], oid[2:])
+	if err := os.MkdirAll(filepath.Dir(lfsPath), 0o755); err != nil {
+		return err
+	}
+	if err := os.WriteFile(lfsPath, data, 0o644); err != nil {
+		return err
+	}
+	return os.WriteFile(resolved, []byte(formatLFSPointer(oid, int64(len(data)))), perm)
+}
+
+func (s *gitlfsStorage) Rename(ctx context.Context, oldName, newName string) error {
+	return s.local.Rename(ctx, oldName, newName)
+}
+
+func (s *gitlfsStorage) Create(ctx context.Context, name string) (File, error) {
+	resolved := s.resolvePath(name)
+	if err := os.MkdirAll(filepath.Dir(resolved), 0o755); err != nil {
+		return nil, err
+	}
+	return &gitlfsWriteFile{
+		buf:          &bytes.Buffer{},
+		resolvedPath: resolved,
+		lfsCachePath: s.lfsCachePath,
+	}, nil
+}
+
+func (s *gitlfsStorage) Exists(ctx context.Context, name string) bool {
+	return s.local.Exists(ctx, name)
+}
+
+func (s *gitlfsStorage) Join(elem ...string) string {
+	return filepath.Join(elem...)
+}
+
+// --- File types ---
+
+type gitlfsReadFile struct {
+	baseFile
+	r *bytes.Reader
+}
+
+func (f *gitlfsReadFile) Read(p []byte) (int, error)     { return f.r.Read(p) }
+func (f *gitlfsReadFile) ReadAt(p []byte, off int64) (int, error) { return f.r.ReadAt(p, off) }
+func (f *gitlfsReadFile) Seek(offset int64, whence int) (int64, error) { return f.r.Seek(offset, whence) }
+func (f *gitlfsReadFile) Close() error                   { return nil }
+func (f *gitlfsReadFile) String() string                 { return "" }
+
+type gitlfsWriteFile struct {
+	baseFile
+	buf          *bytes.Buffer
+	resolvedPath string
+	lfsCachePath string
+	closed       bool
+}
+
+func (f *gitlfsWriteFile) Write(p []byte) (int, error) {
+	if f.closed {
+		return 0, fmt.Errorf("gitlfs: write on closed file")
+	}
+	return f.buf.Write(p)
+}
+
+func (f *gitlfsWriteFile) Read(p []byte) (int, error) {
+	return f.buf.Read(p)
+}
+
+func (f *gitlfsWriteFile) Close() error {
+	if f.closed {
+		return nil
+	}
+	f.closed = true
+	data := f.buf.Bytes()
+	hash := sha256.Sum256(data)
+	oid := hex.EncodeToString(hash[:])
+	// Store data in LFS object cache
+	lfsPath := filepath.Join(f.lfsCachePath, oid[:2], oid[2:])
+	if err := os.MkdirAll(filepath.Dir(lfsPath), 0o755); err != nil {
+		return err
+	}
+	if err := os.WriteFile(lfsPath, data, 0o644); err != nil {
+		return err
+	}
+	// Write pointer file at the target path
+	return os.WriteFile(f.resolvedPath, []byte(formatLFSPointer(oid, int64(len(data)))), 0o644)
+}
+
+func (f *gitlfsWriteFile) String() string {
+	return f.resolvedPath
+}
+
+// Helper functions
 
 func isLFSPointer(content []byte) bool {
 	scanner := bufio.NewScanner(bytes.NewReader(content))

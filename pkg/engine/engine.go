@@ -12,8 +12,8 @@ import (
 )
 
 type Engine struct {
-	catalog *catalog.Catalog
-	Verbose bool
+	catalog      *catalog.Catalog
+	VerboseLevel int
 }
 
 func NewEngine(catalog *catalog.Catalog) *Engine {
@@ -58,7 +58,7 @@ func (e *Engine) executeCreateTable(stmt *parser.CreateTableStmt) error {
 	if err := e.catalog.CreateTable(table); err != nil {
 		return err
 	}
-	if e.Verbose {
+	if e.VerboseLevel > 0 {
 		fmt.Printf("-- created table %s with %d columns\n", stmt.Name, len(stmt.Columns))
 	}
 	return nil
@@ -108,7 +108,7 @@ func (e *Engine) executeInsertOverwrite(stmt *parser.InsertOverwriteStmt) error 
 	if err := storage.WriteRows(target, rows, stmt.Append); err != nil {
 		return fmt.Errorf("write target table %s failed: %w", stmt.TableName, err)
 	}
-	if e.Verbose {
+	if e.VerboseLevel > 0 {
 		action := "overwrote"
 		if stmt.Append {
 			action = "appended"
@@ -675,7 +675,7 @@ func (e *Engine) executeInsertValues(stmt *parser.InsertOverwriteStmt) error {
 		rows = append(rows, row)
 	}
 
-	if e.Verbose {
+	if e.VerboseLevel > 0 {
 		action := "overwrite"
 		if stmt.Append {
 			action = "append"
@@ -686,7 +686,7 @@ func (e *Engine) executeInsertValues(stmt *parser.InsertOverwriteStmt) error {
 	if err := storage.WriteRows(target, rows, stmt.Append); err != nil {
 		return fmt.Errorf("write target table %s failed: %w", stmt.TableName, err)
 	}
-	if e.Verbose {
+	if e.VerboseLevel > 0 {
 		action := "overwrote"
 		if stmt.Append {
 			action = "appended"

@@ -2,9 +2,11 @@ package storage
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"errors"
 	"fmt"
-	"net/url"
-	"os"
+	"io/fs"
 	"path/filepath"
 	"strings"
 
@@ -12,11 +14,10 @@ import (
 	"github.com/ilibx/gsql/pkg/serde"
 )
 
-func tempFilePattern(outputFile string) string {
-	if ext := filepath.Ext(outputFile); ext != "" {
-		return "append_*" + ext
-	}
-	return "append_*"
+func tempFileName(ext string) string {
+	b := make([]byte, 8)
+	rand.Read(b)
+	return "append_" + hex.EncodeToString(b) + ext
 }
 
 type TableReader interface {
@@ -41,41 +42,14 @@ type partitionFile struct {
 }
 
 func ReadTableRows(tbl *catalog.Table, filters ...PartitionFilter) ([]Row, error) {
-	storageType := strings.ToLower(tbl.Option("storage", "local"))
-	switch storageType {
-	case "", "local":
-		return readLocalTable(tbl, filters)
-	case "s3":
-		return readS3Table(tbl, filters)
-	case "ftp":
-		return readFTPTable(tbl, filters)
-	case "sftp":
-		return readSFTPTable(tbl, filters)
-	case "webdav":
-		return readWebDAVTable(tbl, filters)
-	case "git-lfs", "gitlfs":
-		return readGitLFSTable(tbl, filters)
-	default:
-		return nil, fmt.Errorf("unsupported storage type %q", storageType)
+	store, err := GetStorage(tbl)
+	if err != nil {
+		return nil, err
 	}
+	return readTable(store, tbl, filters)
 }
 
-func readLocalTable(tbl *catalog.Table, filters []PartitionFilter) ([]Row, error) {
-	// Try to get location from either 'location' or URL
-	location := tbl.Option("location", "")
-	if location == "" {
-		// Check if URL is provided
-		rawURL := tbl.Option("url", "")
-		if rawURL != "" {
-			if parsed, err := url.Parse(rawURL); err == nil && parsed.Scheme == "local" {
-				location = parsed.Path
-			}
-		}
-		if location == "" {
-			return nil, fmt.Errorf("missing location for table %s", tbl.Name)
-		}
-	}
-
+func readTable(store Storage, tbl *catalog.Table, filters []PartitionFilter) ([]Row, error) {
 	format := strings.ToLower(tbl.Option("format", ""))
 	if format == "" {
 		return nil, fmt.Errorf("missing format for table %s", tbl.Name)
@@ -88,24 +62,24 @@ func readLocalTable(tbl *catalog.Table, filters []PartitionFilter) ([]Row, error
 
 	var partitions []partitionFile
 	var err error
-		isPartitioned := len(tbl.PartitionBy) > 0
-		if isPartitioned {
-			bareFormat := tbl.Option("partition_format", "") == "value"
-			partitions, err = resolvePartitionPaths(location, pattern, tbl.PartitionBy, filters, bareFormat)
+	isPartitioned := len(tbl.PartitionBy) > 0
+	if isPartitioned {
+		bareFormat := tbl.Option("partition_format", "") == "value"
+		partitions, err = resolvePartitionPaths(store, ".", pattern, tbl.PartitionBy, filters, bareFormat)
 		if err != nil {
 			return nil, err
 		}
 		if len(partitions) == 0 {
-			return nil, fmt.Errorf("no files found for table %s at %s matching partition filters", tbl.Name, location)
+			return nil, fmt.Errorf("no files found for table %s matching partition filters", tbl.Name)
 		}
 	} else {
 		var paths []string
-		paths, err = resolveLocalPaths(location, pattern)
+		paths, err = resolveLocalPaths(store, pattern)
 		if err != nil {
 			return nil, err
 		}
 		if len(paths) == 0 {
-			return nil, fmt.Errorf("no files found for table %s at %s", tbl.Name, location)
+			return nil, fmt.Errorf("no files found for table %s", tbl.Name)
 		}
 		partitions = make([]partitionFile, len(paths))
 		for i, p := range paths {
@@ -126,9 +100,9 @@ func readLocalTable(tbl *catalog.Table, filters []PartitionFilter) ([]Row, error
 			var readErr error
 			switch format {
 			case "csv":
-				fileRows, readErr = readCSV(pf.Path, tbl.Columns, csvOpts)
+				fileRows, readErr = readCSV(store, pf.Path, tbl.Columns, csvOpts)
 			case "json":
-				fileRows, readErr = readJSON(pf.Path, tbl.Columns)
+				fileRows, readErr = readJSON(store, pf.Path, tbl.Columns)
 			default:
 				resultCh <- fileResult{err: fmt.Errorf("unsupported format %q", format)}
 				return
@@ -159,59 +133,72 @@ func readLocalTable(tbl *catalog.Table, filters []PartitionFilter) ([]Row, error
 	return rows, nil
 }
 
-func resolvePartitionPaths(location, pattern string, partitionCols []string, filters []PartitionFilter, bareFormatOpt bool) ([]partitionFile, error) {
+func resolvePartitionPaths(store Storage, location, pattern string, partitionCols []string, filters []PartitionFilter, bareFormatOpt bool) ([]partitionFile, error) {
+	ctx := context.Background()
 	filterMap := make(map[string][]partitionFilterCond)
 	for _, f := range filters {
 		filterMap[f.Column] = append(filterMap[f.Column], partitionFilterCond{Operator: f.Operator, Value: f.Value})
 	}
 
-    // Auto-detect partition format: check if first partition level uses col=value or bare directories
-    // If partition_format option is explicitly set, use that; otherwise auto-detect.
-    useBareFormat := bareFormatOpt
-    if !useBareFormat {
-        if firstEntries, err := os.ReadDir(location); err == nil && len(partitionCols) > 0 {
-            hasColEq := false
-            hasBareDir := false
-            prefix := partitionCols[0] + "="
-            for _, e := range firstEntries {
-                if !e.IsDir() {
-                    continue
-                }
-                if strings.HasPrefix(e.Name(), prefix) {
-                    hasColEq = true
-                } else {
-                    hasBareDir = true
-                }
-            }
-            // Only use bare format if there are no col=value dirs
-            useBareFormat = !hasColEq && hasBareDir
-        }
-    }
+	// Auto-detect partition format: check if first partition level uses col=value or bare directories
+	useBareFormat := bareFormatOpt
+	if !useBareFormat {
+		if firstEntries, err := store.List(ctx, location); err == nil && len(partitionCols) > 0 {
+			hasColEq := false
+			hasBareDir := false
+			prefix := partitionCols[0] + "="
+			for _, entry := range firstEntries {
+				leaf := filepath.Base(entry)
+				info, err := store.Stat(ctx, entry)
+				if err != nil || !info.IsDir() {
+					continue
+				}
+				if strings.HasPrefix(leaf, prefix) {
+					hasColEq = true
+				} else {
+					hasBareDir = true
+				}
+			}
+			// Only use bare format if there are no col=value dirs
+			useBareFormat = !hasColEq && hasBareDir
+		}
+	}
 
-    dirs := []string{location}
+	dirs := []string{location}
 	for _, col := range partitionCols {
 		var next []string
 		for _, dir := range dirs {
-			entries, err := os.ReadDir(dir)
+			entries, err := store.List(ctx, dir)
 			if err != nil {
-				if os.IsNotExist(err) {
-					continue
-				}
-				return nil, err
+				continue
 			}
-			for _, e := range entries {
-				if !e.IsDir() {
+			for _, entry := range entries {
+				info, err := store.Stat(ctx, entry)
+				if err != nil || !info.IsDir() {
 					continue
 				}
-				var val string
-				if useBareFormat {
-					val = e.Name()
+
+				// Extract leaf name (the current partition level)
+				var leaf string
+				if dir == "." || dir == "" {
+					leaf = entry
 				} else {
-					prefix := col + "="
-					if !strings.HasPrefix(e.Name(), prefix) {
+					if rel, err := filepath.Rel(dir, entry); err == nil && !strings.Contains(rel, string(filepath.Separator)) {
+						leaf = rel
+					} else {
 						continue
 					}
-					val = strings.TrimPrefix(e.Name(), prefix)
+				}
+
+				var val string
+				if useBareFormat {
+					val = leaf
+				} else {
+					prefix := col + "="
+					if !strings.HasPrefix(leaf, prefix) {
+						continue
+					}
+					val = strings.TrimPrefix(leaf, prefix)
 				}
 
 				// Check all filters for this column
@@ -220,7 +207,7 @@ func resolvePartitionPaths(location, pattern string, partitionCols []string, fil
 						continue
 					}
 				}
-				next = append(next, filepath.Join(dir, e.Name()))
+				next = append(next, entry)
 			}
 		}
 		if len(next) == 0 {
@@ -231,9 +218,9 @@ func resolvePartitionPaths(location, pattern string, partitionCols []string, fil
 
 	var files []partitionFile
 	for _, dir := range dirs {
-		matches, err := filepath.Glob(filepath.Join(dir, pattern))
+		matches, err := store.Glob(ctx, store.Join(dir, pattern))
 		if err != nil {
-			return nil, err
+			continue
 		}
 		for _, match := range matches {
 			pf := partitionFile{Path: match, PartitionValues: make(map[string]string)}
@@ -295,146 +282,137 @@ func matchPartitionValue(val string, conds []partitionFilterCond) bool {
 	return true
 }
 
-func resolveLocalPaths(location, pattern string) ([]string, error) {
-	if strings.ContainsAny(location, "*?[]") {
-		return filepath.Glob(location)
-	}
+func resolveLocalPaths(store Storage, pattern string) ([]string, error) {
+	ctx := context.Background()
 
-	info, err := os.Stat(location)
-	if err != nil {
-		return nil, err
-	}
-
-	if info.IsDir() {
-		globPath := filepath.Join(location, pattern)
-		matches, err := filepath.Glob(globPath)
+	// If the pattern contains glob characters, use it directly
+	if strings.ContainsAny(pattern, "*?[]") {
+		matches, err := store.Glob(ctx, pattern)
 		if err != nil {
 			return nil, err
 		}
-		// filter out directories
 		var files []string
 		for _, m := range matches {
-			if fi, statErr := os.Stat(m); statErr == nil && !fi.IsDir() {
+			info, err := store.Stat(ctx, m)
+			if err == nil && !info.IsDir() {
 				files = append(files, m)
 			}
 		}
 		return files, nil
 	}
 
-	return []string{location}, nil
+	// pattern is a specific file name
+	info, err := store.Stat(ctx, pattern)
+	if err != nil {
+		return nil, err
+	}
+	if info.IsDir() {
+		// pattern is a directory — list all files inside
+		entries, err := store.List(ctx, pattern)
+		if err != nil {
+			return nil, err
+		}
+		var files []string
+		for _, entry := range entries {
+			info, err := store.Stat(ctx, entry)
+			if err == nil && !info.IsDir() {
+				files = append(files, entry)
+			}
+		}
+		return files, nil
+	}
+	return []string{pattern}, nil
 }
 
-func readCSV(path string, columns []catalog.ColumnDef, opts serde.CSVOptions) ([]Row, error) {
-	file, err := os.Open(path)
+func readCSV(store Storage, path string, columns []catalog.ColumnDef, opts serde.CSVOptions) ([]Row, error) {
+	ctx := context.Background()
+	file, err := store.Open(ctx, path)
 	if err != nil {
 		return nil, err
 	}
 	defer file.Close()
 
-	return serde.Decode(context.Background(), "csv", file, columns, opts)
+	return serde.Decode(ctx, "csv", file, columns, opts)
 }
 
-func readJSON(path string, columns []catalog.ColumnDef) ([]Row, error) {
-	file, err := os.Open(path)
+func readJSON(store Storage, path string, columns []catalog.ColumnDef) ([]Row, error) {
+	ctx := context.Background()
+	file, err := store.Open(ctx, path)
 	if err != nil {
 		return nil, err
 	}
 	defer file.Close()
 
-	return serde.Decode(context.Background(), "json", file, columns, serde.CSVOptions{})
+	return serde.Decode(ctx, "json", file, columns, serde.CSVOptions{})
 }
 
 func WriteRows(tbl *catalog.Table, rows []Row, appendMode bool) error {
-	storageType := strings.ToLower(tbl.Option("storage", "local"))
-	switch storageType {
-	case "", "local":
-		return writeLocalTable(tbl, rows, appendMode)
-	case "s3":
-		return writeS3Table(tbl, rows, appendMode)
-	case "ftp":
-		return writeFTPTable(tbl, rows, appendMode)
-	case "sftp":
-		return writeSFTPTable(tbl, rows, appendMode)
-	case "webdav":
-		return writeWebDAVTable(tbl, rows, appendMode)
-	case "git-lfs", "gitlfs":
-		return writeGitLFSTable(tbl, rows, appendMode)
-	default:
-		return fmt.Errorf("unsupported storage type %q", storageType)
+	store, err := GetStorage(tbl)
+	if err != nil {
+		return err
 	}
+	return writeTable(store, tbl, rows, appendMode)
 }
 
-func writeLocalTable(tbl *catalog.Table, rows []Row, appendMode bool) error {
-	location := tbl.Option("location", "")
-	if location == "" {
-		return fmt.Errorf("missing location for table %s", tbl.Name)
-	}
+func writeTable(store Storage, tbl *catalog.Table, rows []Row, appendMode bool) error {
+	ctx := context.Background()
 	outputFile := tbl.Option("file_name", "result.csv")
 	format := strings.ToLower(tbl.Option("format", "csv"))
 
 	csvOpts := serde.NewCSVOptions(tbl)
 
 	if len(tbl.PartitionBy) > 0 {
-		return writePartitionedTable(location, outputFile, format, tbl, rows, appendMode, csvOpts)
+		return writePartitionedTable(store, outputFile, format, tbl, rows, appendMode, csvOpts)
 	}
-	if err := os.MkdirAll(location, 0o755); err != nil {
+	if err := store.MkdirAll(ctx, ".", 0o755); err != nil {
 		return err
 	}
 
-	outputPath := filepath.Join(location, outputFile)
-	var existingRows []Row
+	outputPath := outputFile
 	if appendMode {
-		// Read existing rows if file exists
-		if _, err := os.Stat(outputPath); err == nil {
-			existingRows, err = readCSV(outputPath, tbl.Columns, csvOpts)
-			if err != nil {
-				return fmt.Errorf("failed to read existing CSV: %w", err)
-			}
-			fmt.Printf("-- read %d existing rows from %s\n", len(existingRows), outputPath)
-		} else {
-			fmt.Printf("-- no existing file %s, creating new\n", outputPath)
-		}
-		f, err := os.CreateTemp(location, tempFilePattern(outputFile))
+		tmpName := tempFileName(filepath.Ext(outputFile))
+		f, err := store.Create(ctx, tmpName)
 		if err != nil {
 			return err
 		}
 		f.Close()
-		outputPath = f.Name()
+		outputPath = tmpName
 	}
 
 	// Use atomic write: write to temp file, then rename
 	tmpPath := outputPath + ".tmp"
-	file, err := os.Create(tmpPath)
+	file, err := store.Create(ctx, tmpPath)
 	if err != nil {
 		return err
 	}
-	if err := serde.Encode(context.Background(), format, rows, tbl.Columns, file, csvOpts); err != nil {
+	if err := serde.Encode(ctx, format, rows, tbl.Columns, file, csvOpts); err != nil {
 		file.Close()
-		os.Remove(tmpPath)
+		store.Remove(ctx, tmpPath)
 		return err
 	}
 	if err := file.Close(); err != nil {
-		os.Remove(tmpPath)
+		store.Remove(ctx, tmpPath)
 		return err
 	}
 
-	if err := os.Rename(tmpPath, outputPath); err != nil {
-		os.Remove(tmpPath)
+	if err := store.Rename(ctx, tmpPath, outputPath); err != nil {
+		store.Remove(ctx, tmpPath)
 		return fmt.Errorf("failed to rename temp file: %w", err)
 	}
 	if appendMode {
 		// Remove the original file and rename the temp file to the original file
-		if err := os.Remove(filepath.Join(location, outputFile)); err != nil && !os.IsNotExist(err) {
+		if err := store.Remove(ctx, outputFile); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return fmt.Errorf("failed to remove original file: %w", err)
 		}
-		if err := os.Rename(outputPath, filepath.Join(location, outputFile)); err != nil {
+		if err := store.Rename(ctx, outputPath, outputFile); err != nil {
 			return fmt.Errorf("failed to rename temp file to original: %w", err)
 		}
 	}
 	return nil
 }
 
-func writePartitionedTable(location, outputFile, format string, tbl *catalog.Table, rows []Row, appendMode bool, csvOpts serde.CSVOptions) error {
+func writePartitionedTable(store Storage, outputFile, format string, tbl *catalog.Table, rows []Row, appendMode bool, csvOpts serde.CSVOptions) error {
+	ctx := context.Background()
 	partitionCols := tbl.PartitionBy
 
 	partitions := make(map[string][]Row)
@@ -455,39 +433,39 @@ func writePartitionedTable(location, outputFile, format string, tbl *catalog.Tab
 	}
 
 	for key, partRows := range partitions {
-		partDir := filepath.Join(location, key)
-		if err := os.MkdirAll(partDir, 0o755); err != nil {
+		if err := store.MkdirAll(ctx, key, 0o755); err != nil {
 			return err
 		}
 		var outPath string
 		if appendMode {
-			f, err := os.CreateTemp(partDir, tempFilePattern(outputFile))
+			tmpName := tempFileName(filepath.Ext(outputFile))
+			f, err := store.Create(ctx, store.Join(key, tmpName))
 			if err != nil {
 				return err
 			}
 			f.Close()
-			outPath = f.Name()
+			outPath = store.Join(key, tmpName)
 		} else {
-			outPath = filepath.Join(partDir, outputFile)
+			outPath = store.Join(key, outputFile)
 		}
 
 		// Atomic write: write to temp, then rename
 		tmpPath := outPath + ".tmp"
-		file, err := os.Create(tmpPath)
+		file, err := store.Create(ctx, tmpPath)
 		if err != nil {
 			return err
 		}
-		if err := serde.Encode(context.Background(), format, partRows, tbl.Columns, file, csvOpts); err != nil {
+		if err := serde.Encode(ctx, format, partRows, tbl.Columns, file, csvOpts); err != nil {
 			file.Close()
-			os.Remove(tmpPath)
+			store.Remove(ctx, tmpPath)
 			return err
 		}
 		if err := file.Close(); err != nil {
-			os.Remove(tmpPath)
+			store.Remove(ctx, tmpPath)
 			return err
 		}
-		if err := os.Rename(tmpPath, outPath); err != nil {
-			os.Remove(tmpPath)
+		if err := store.Rename(ctx, tmpPath, outPath); err != nil {
+			store.Remove(ctx, tmpPath)
 			return fmt.Errorf("failed to rename temp file: %w", err)
 		}
 	}

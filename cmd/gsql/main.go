@@ -3,6 +3,7 @@ package main
 import (
     "fmt"
     "os"
+    "strings"
 
     "github.com/ilibx/gsql/pkg/catalog"
     "github.com/ilibx/gsql/pkg/engine"
@@ -11,26 +12,35 @@ import (
 
 func main() {
     if len(os.Args) < 2 {
-        fmt.Println("Usage: gsql [desc] -s <sql-file> [-e <sql-statement>] ...")
+        fmt.Println("Usage: gsql [desc] [-v]... -s <sql-file> [-e <sql-statement>] ...")
         os.Exit(1)
     }
 
     args := os.Args[1:]
-    verbose := false
+    debugLevel := 0
 
-    if args[0] == "desc" {
-        verbose = true
-        args = args[1:]
+    // First pass: extract desc and all -v/-vvvv flags
+    var filtered []string
+    for _, a := range args {
+        switch {
+        case a == "desc":
+            if debugLevel == 0 {
+                debugLevel = 1
+            }
+        case a == "-v":
+            debugLevel++
+        case strings.HasPrefix(a, "-v") && len(a) > 2:
+            debugLevel += len(a) - 1 // -vv → 2, -vvv → 3, etc.
+        default:
+            filtered = append(filtered, a)
+        }
     }
-
-    if len(args) == 0 {
-        fmt.Fprintln(os.Stderr, "error: expected -s or -e arguments")
-        os.Exit(1)
-    }
+    args = filtered
 
     cat := catalog.NewCatalog()
     eng := engine.NewEngine(cat)
-    eng.Verbose = verbose
+    eng.VerboseLevel = debugLevel
+    catalog.DebugLevel = debugLevel
     p := parser.NewParser()
 
     for i := 0; i < len(args); i++ {
