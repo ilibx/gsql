@@ -63,6 +63,9 @@ gsql 拥有以下核心层次：
   - `Git LFS` 版本控制大文件访问
 - 表别名支持（`FROM users u`、`JOIN orders o`）
 - 列别名支持（`COUNT(*) AS cnt`、`ORDER BY cnt`）
+- `UNION ALL` 合并多个查询结果
+- `SELECT` 无 `FROM` 子句（如 `SELECT 1 AS x, 'hello' AS msg`）
+- `VALUES` 在 `FROM` 子句中（如 `FROM (VALUES (1,'a'), (2,'b')) AS t(id,name)`）
 - `EXPLAIN` 命令查看逻辑计划、优化后逻辑计划与物理执行计划
 
 ## 使用示例
@@ -218,8 +221,30 @@ FROM users
 WHERE name != 'alice';
 ```
 
-### S3 / S3兼容服务 (使用 AWS S3)
+### S3 / S3兼容服务
 
+支持两种配置方式：
+
+**URL 方式（推荐）**：
+```sql
+CREATE TABLE s3_data (
+  id INT,
+  name STRING
+)
+WITH (
+  url = 's3://s3.example.com/my-bucket/data/?region=us-east-1&access_key=xxx&access_secret=yyy',
+  format = 'csv',
+  file_pattern = '*.csv'
+);
+```
+
+URL 格式：`s3://endpoint/bucket/prefix?region=...&access_key=...&access_secret=...`
+
+- host 部分为 endpoint（如 `s3.us-east-1.amazonaws.com`、`play.min.io`）
+- 第一个路径段为 bucket，后续为 prefix
+- 查询参数支持 `region`、`access_key`、`access_secret`、`use_path_style`、`retry_mode`
+
+**传统方式**：
 ```sql
 CREATE TABLE s3_data (
   id INT,
@@ -229,13 +254,26 @@ WITH (
   storage = 's3',
   s3_bucket = 'my-bucket',
   s3_region = 'us-east-1',
-  s3_prefix = 'data/',
+  url = 's3://my-bucket/data/',        -- 或使用 URL，host 为 bucket 名（向后兼容）
   format = 'csv',
-  file_pattern = '*.csv'
+  file_pattern = '*.csv',
+  use_path_style = 'true',             -- 使用路径式寻址（MinIO 等需要）
+  retry_mode = 'adaptive'              -- 重试模式：standard / adaptive
 );
-
-SELECT * FROM s3_data LIMIT 10;
 ```
+
+S3 配置参数：
+
+| 参数 | 说明 |
+|------|------|
+| `s3_bucket` / `bucket` | S3 存储桶名 |
+| `s3_region` / `region` | 区域（如 `us-east-1`） |
+| `s3_prefix` / `prefix` | 路径前缀 |
+| `s3_endpoint` / `endpoint` | 自定义 endpoint（MinIO 等） |
+| `access_key` | 访问密钥 ID |
+| `access_secret` | 访问密钥 Secret |
+| `use_path_style` | 使用路径式寻址 `http://endpoint/bucket/key` 而非虚拟主机式 `http://bucket.endpoint/key`（MinIO 等需要设为 `true`） |
+| `retry_mode` | 重试模式：`standard`（限速指数退避）或 `adaptive`（自适应限速） |
 
 ### FTP / SFTP 服务器
 
@@ -303,6 +341,29 @@ WITH (
 );
 ```
 
+### 无 FROM 查询
+
+```sql
+-- 直接计算表达式，无需 FROM 子句
+SELECT 1 AS id, 'hello' AS msg, 3.14 AS pi;
+```
+
+### VALUES 内联表
+
+```sql
+-- 在 FROM 中使用 VALUES 构造临时表，需指定列名
+SELECT * FROM (VALUES (1, 'a'), (2, 'b'), (3, 'c')) AS t(id, name)
+WHERE id > 1;
+```
+
+### UNION ALL
+
+```sql
+SELECT name FROM users WHERE id < 10
+UNION ALL
+SELECT name FROM admin_users;
+```
+
 ## 并行执行与计划生成
 
 当前引擎已将 `SELECT` 查询转换为执行计划节点：
@@ -363,6 +424,17 @@ Limit(5)
 go test ./...
 ```
 
+## 命令行选项
+
+```bash
+gsql -f query.sql          # 执行 SQL 文件
+gsql -v -f query.sql       # 调试级别 1（显示 DEBUG 信息）
+gsql -vvvvvv -f query.sql  # 调试级别 6（显示详细调试信息）
+gsql desc                  # 显示表描述信息（desc 关键字等价于 -v）
+```
+
+`-v` 可置于命令任意位置，每增加一个 `v` 提升一级调试级别。
+
 ## Makefile 使用
 
 ```bash
@@ -386,7 +458,7 @@ gsql 支持多种存储后端，提供两种配置方式：
 | 存储类型 | 说明 | 配置参数 |
 |---------|------|---------|
 | `local` | 本地文件系统（支持分区表目录结构自动检测） | `location`, `file_pattern`, `file_name`, `partition_format` |
-| `s3` | AWS S3 或 S3兼容服务 | `s3_bucket`, `s3_region`, `s3_prefix`, `s3_endpoint`(可选) |
+| `s3` | AWS S3 或 S3兼容服务 | `s3_bucket`, `s3_region`, `s3_prefix`, `s3_endpoint`(可选), `access_key`(可选), `access_secret`(可选), `use_path_style`(可选), `retry_mode`(可选) |
 | `ftp` | FTP 服务器 | `ftp_host`, `ftp_port`, `ftp_user`, `ftp_pass`, `ftp_path` |
 | `sftp` | SFTP 服务器 | `sftp_host`, `sftp_port`, `sftp_user`, `sftp_pass`, `sftp_path` |
 | `webdav` | WebDAV 服务 | `webdav_url`, `webdav_user`, `webdav_pass`, `webdav_path` |
@@ -414,7 +486,7 @@ WITH (
 | `local://` | `local:///data/path`                                                     | 本地文件系统，路径为绝对路径                                                             |
 | `ftp://`   | `ftp://user:pass@ftp.example.com:21/data`                                | FTP 服务器，支持用户名密码和端口                                                         |
 | `sftp://`  | `sftp://user:pass@sftp.example.com/data`                                 | SFTP 服务器，默认端口 22                                                                |
-| `s3://`    | `s3://bucket/path?region=us-east-1&endpoint=s3.example.com`              | S3 或兼容服务（如 MinIO），支持 region 和 endpoint 参数                                |
+| `s3://`    | `s3://s3.example.com/bucket/path?region=us-east-1&access_key=xxx&access_secret=yyy` | S3 或兼容服务（如 MinIO），host 为 endpoint，第一个路径段为 bucket。支持 `region`, `access_key`, `access_secret`, `use_path_style`, `retry_mode` 参数。也兼容旧格式 `s3://bucket/path`（host 为 bucket 名） |
 | `hdfs://`  | `hdfs://namenode:8020/data`                                              | HDFS 文件系统，支持指定 namenode 和端口                                                 |
 | `webdav://`| `webdav://user:pass@webdav.example.com/data`                             | WebDAV 服务，支持用户名密码                                                             |
 | `git://`   | `git:///path/to/repo` 或 `git://user:pass@git.example.com/repo.git`      | Git 仓库（支持 Git LFS），可以是本地路径或远程仓库 URL
@@ -443,6 +515,6 @@ WITH (
 
 ## 未来扩展方向
 
-- 支持更多 SQL 标准特性（UNION、INTERSECT、EXCEPT等）
+- 支持更多 SQL 标准特性（INTERSECT、EXCEPT等）
 - 添加更完善的 SQL 解析器与优化器
 - 支持分布式执行或更大规模并行模型

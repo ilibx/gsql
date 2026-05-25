@@ -14,6 +14,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/ilibx/gsql/pkg/catalog"
@@ -22,6 +23,9 @@ import (
 const s3Timeout = 30 * time.Second
 
 // parseS3URL extracts bucket and prefix from an S3 URL like s3://bucket/prefix.
+// This is a fallback parser for tables created programmatically without going
+// through CREATE TABLE (where catalog.go's parseStorageURL handles the new
+// s3://endpoint/bucket/prefix format).
 func parseS3URL(rawURL string) (bucket, prefix string, err error) {
 	u, err := url.Parse(rawURL)
 	if err != nil {
@@ -68,24 +72,68 @@ func newS3Storage(tbl *catalog.Table) (Storage, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), s3Timeout)
 	defer cancel()
 
-	cfg, err := config.LoadDefaultConfig(ctx)
+	region := tbl.Option("region", "")
+	if region == "" {
+		region = tbl.Option("s3_region", "")
+	}
+	accessKey := tbl.Option("access_key", "")
+	accessSecret := tbl.Option("access_secret", "")
+
+	var loadOpts []func(*config.LoadOptions) error
+	if region != "" {
+		loadOpts = append(loadOpts, config.WithRegion(region))
+	}
+	if accessKey != "" && accessSecret != "" {
+		loadOpts = append(loadOpts, config.WithCredentialsProvider(
+			credentials.NewStaticCredentialsProvider(accessKey, accessSecret, ""),
+		))
+	}
+	if retryMode := retryModeFromOption(tbl); retryMode != "" {
+		loadOpts = append(loadOpts, config.WithRetryMode(retryMode))
+	}
+
+	cfg, err := config.LoadDefaultConfig(ctx, loadOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load AWS config: %w", err)
 	}
-	if region := tbl.Option("region", ""); region != "" {
-		cfg.Region = region
-	}
+
+	usePathStyle := tbl.Option("use_path_style", "") == "true" ||
+		tbl.Option("s3_use_path_style", "") == "true"
 
 	var client *s3.Client
-	if endpoint := tbl.Option("endpoint", ""); endpoint != "" {
+	endpoint := tbl.Option("endpoint", "")
+	if endpoint == "" {
+		endpoint = tbl.Option("s3_endpoint", "")
+	}
+	if endpoint != "" {
 		client = s3.NewFromConfig(cfg, func(o *s3.Options) {
 			o.BaseEndpoint = &endpoint
+			o.UsePathStyle = usePathStyle
 		})
 	} else {
-		client = s3.NewFromConfig(cfg)
+		client = s3.NewFromConfig(cfg, func(o *s3.Options) {
+			o.UsePathStyle = usePathStyle
+		})
 	}
 
 	return &s3Storage{client: client, bucket: bucket, prefix: prefix}, nil
+}
+
+// retryModeFromOption returns the AWS retry mode from table options.
+// Accepts: "standard", "adaptive" (case-insensitive).
+func retryModeFromOption(tbl *catalog.Table) aws.RetryMode {
+	val := tbl.Option("retry_mode", "")
+	if val == "" {
+		val = tbl.Option("s3_retry_mode", "")
+	}
+	switch strings.ToLower(val) {
+	case "standard":
+		return aws.RetryModeStandard
+	case "adaptive":
+		return aws.RetryModeAdaptive
+	default:
+		return ""
+	}
 }
 
 func (s *s3Storage) resolveKey(name string) string {

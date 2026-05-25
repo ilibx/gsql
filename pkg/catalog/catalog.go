@@ -134,18 +134,37 @@ func parseStorageURL(tbl *Table) {
         tbl.WithOptions["path"] = parsed.Path
     case "s3":
         tbl.WithOptions["storage"] = "s3"
-        // Extract bucket name from path (first component)
+        // Format: s3://endpoint/bucket/path or s3://bucket/path (legacy)
+        // If the host looks like an endpoint (has dots), use it as endpoint;
+        // otherwise treat it as a bucket name (legacy format).
         pathParts := strings.Split(strings.Trim(parsed.Path, "/"), "/")
-        if len(pathParts) > 0 {
-            tbl.WithOptions["bucket"] = pathParts[0]
-        }
-        if len(pathParts) > 1 {
-            tbl.WithOptions["prefix"] = strings.Join(pathParts[1:], "/")
+        if strings.Contains(parsed.Host, ".") || strings.Contains(parsed.Host, ":") {
+            // Host is an endpoint: s3://s3.example.com/bucket/path
+            tbl.WithOptions["endpoint"] = fmt.Sprintf("https://%s", parsed.Host)
+            if len(pathParts) > 0 {
+                tbl.WithOptions["bucket"] = pathParts[0]
+            }
+            if len(pathParts) > 1 {
+                tbl.WithOptions["prefix"] = strings.Join(pathParts[1:], "/")
+            }
+        } else {
+            // Host is a bucket name (legacy): s3://bucket/path
+            tbl.WithOptions["bucket"] = parsed.Host
+            if len(pathParts) > 0 && pathParts[0] != "" {
+                tbl.WithOptions["prefix"] = strings.Join(pathParts, "/")
+            }
         }
         // Parse query parameters
         for k, v := range parsed.Query() {
             if len(v) > 0 {
-                tbl.WithOptions["s3_" + strings.ToLower(k)] = v[0]
+                key := strings.ToLower(k)
+                if key == "access_key" || key == "accesskey" {
+                    tbl.WithOptions["access_key"] = v[0]
+                } else if key == "access_secret" || key == "accesssecret" || key == "secret_key" || key == "secretkey" {
+                    tbl.WithOptions["access_secret"] = v[0]
+                } else {
+                    tbl.WithOptions["s3_"+key] = v[0]
+                }
             }
         }
     case "hdfs":
