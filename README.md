@@ -355,11 +355,14 @@ WITH (
   storage = 'lark',
   app_id = 'cli_xxxxxxxxxxxx',
   app_secret = 'xxxxxxxxxxxxxxxxxxxxxxxxxxxx',
-  root_token = 'xxxxxxxxxx',          -- 根文件夹 token
+  folder_name = 'gsql-data',          -- 根文件夹名称（推荐，自动创建/查找）
   chat_id = 'oc_xxxxxxxxxxxxx',       -- 可选，分享到的群聊 ID
   format = 'csv',
   file_pattern = '*.csv'
 );
+
+-- 也可直接使用文件夹 token（向后兼容）：
+-- root_token = 'xxxxxxxxxx',
 
 -- 查询 Lark 网盘中的文件
 SELECT * FROM lark_data LIMIT 10;
@@ -376,7 +379,8 @@ Lark 配置参数：
 |------|------|
 | `app_id` / `lark_app_id` | 飞书应用的 App ID |
 | `app_secret` / `lark_app_secret` | 飞书应用的 App Secret |
-| `root_token` / `lark_root_token` | 根文件夹 token（云文档中文件夹链接末尾的 token） |
+| `folder_name` / `lark_folder_name` | 根文件夹名称（推荐）。首次使用自动创建，后续复用已有文件夹 |
+| `root_token` / `lark_root_token` | 根文件夹 token（二选一，与 `folder_name` 任选其一） |
 | `chat_id` / `lark_chat_id` | 群聊 ID（可选），配置后写入文件时自动分享到群 |
 
 **分享到群聊**：如果配置了 `chat_id`，每次通过 `INSERT OVERWRITE` 写入文件后，文件会自动发送到指定群聊。也可通过 `lark://` URL 方式配置：
@@ -387,10 +391,12 @@ CREATE TABLE lark_data (
   name STRING
 )
 WITH (
-  url = 'lark://root_token_xxx/path?app_id=cli_xxx&app_secret=xxx&chat_id=oc_xxx',
+  url = 'lark://gsql-data/path?app_id=cli_xxx&app_secret=xxx&chat_id=oc_xxx',
   format = 'csv'
 );
 ```
+
+URL 中 host 部分为文件夹名称，查询参数支持 `app_id`, `app_secret`, `chat_id`。
 
 ### 无 FROM 查询
 
@@ -514,7 +520,7 @@ gsql 支持多种存储后端，提供两种配置方式：
 | `sftp` | SFTP 服务器 | `host`, `port`(默认22), `username`, `password`, `path` |
 | `webdav` | WebDAV 服务 | `url`(必填), `username`, `password`, `path` |
 | `git-lfs` / `gitlfs` | Git LFS 版本控制 | `git_lfs_repo` 或 `git_lfs_path` |
-| `lark` | 飞书 Lark 云文档 | `app_id`, `app_secret`, `root_token`, `chat_id`(可选) |
+| `lark` | 飞书 Lark 云文档 | `app_id`, `app_secret`, `folder_name`（名称或 `root_token` 二选一）, `chat_id`(可选) |
 
 ### 2. URL 方式（推荐）
 
@@ -542,7 +548,7 @@ WITH (
 | `hdfs://`  | `hdfs://namenode:8020/data`                                              | HDFS 文件系统，支持指定 namenode 和端口                                                 |
 | `webdav://`| `webdav://user:pass@webdav.example.com/data`                             | WebDAV 服务，支持用户名密码                                                             |
 | `git://`   | `git:///path/to/repo` 或 `git://user:pass@git.example.com/repo.git`      | Git 仓库（支持 Git LFS），可以是本地路径或远程仓库 URL
-| `lark://`  | `lark://root_token/path?app_id=xxx&app_secret=xxx&chat_id=xxx`           | 飞书 Lark 云文档，host 为根文件夹 token，路径为文件路径，查询参数支持 `app_id`, `app_secret`, `chat_id` |
+| `lark://`  | `lark://folder_name/path?app_id=xxx&app_secret=xxx&chat_id=xxx`           | 飞书 Lark 云文档。host 为文件夹名称（自动创建/查找），路径为文件路径。支持 `lark://root_token/path` 格式（向后兼容） |
 
 ### 参数优先级
 

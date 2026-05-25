@@ -69,7 +69,7 @@ func TestLarkStorageMissingRootToken(t *testing.T) {
 
 	_, err := newLarkStorage(tbl)
 	if err == nil {
-		t.Error("expected error for missing root_token, got nil")
+		t.Error("expected error for missing root (folder_name or root_token), got nil")
 	}
 }
 
@@ -93,5 +93,49 @@ func TestLarkStorageAlternativeOptionKeys(t *testing.T) {
 	}
 	if chatID := tbl.Option("lark_chat_id", ""); chatID != "oc_xxxxx" {
 		t.Errorf("expected lark_chat_id 'oc_xxxxx', got %q", chatID)
+	}
+}
+
+func TestLarkStorageWithFolderName(t *testing.T) {
+	tbl := &catalog.Table{
+		Name: "test_lark_folder_name",
+		Columns: []catalog.ColumnDef{
+			{Name: "id", Type: "INT"},
+		},
+		WithOptions: map[string]string{
+			"storage":     "lark",
+			"app_id":      "cli_xxx",
+			"app_secret":  "secret_xxx",
+			"folder_name": "gsql-data",
+		},
+	}
+
+	store, err := newLarkStorage(tbl)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	ls := store.(*larkStorage)
+	if ls.folderName != "gsql-data" {
+		t.Errorf("expected folder_name 'gsql-data', got %q", ls.folderName)
+	}
+}
+
+func TestLarkStorageFolderNameMissingRoot(t *testing.T) {
+	tbl := &catalog.Table{
+		Name: "test_lark_folder_no_root",
+		Columns: []catalog.ColumnDef{
+			{Name: "id", Type: "INT"},
+		},
+		WithOptions: map[string]string{
+			"storage":    "lark",
+			"app_id":     "cli_xxx",
+			"app_secret": "secret_xxx",
+			// no folder_name and no root_token
+		},
+	}
+
+	_, err := newLarkStorage(tbl)
+	if err == nil {
+		t.Error("expected error when neither folder_name nor root_token is set, got nil")
 	}
 }

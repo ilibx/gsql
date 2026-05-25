@@ -39,12 +39,15 @@ const (
 type larkStorage struct {
 	appID     string
 	appSecret string
-	rootToken string
+	folderName string
 	chatID    string
 
 	mu        sync.Mutex
 	token     string
 	tokenExp  time.Time
+	rootToken string
+	rootOnce  sync.Once
+	rootErr   error
 	httpCli   *http.Client
 }
 
@@ -61,18 +64,23 @@ func newLarkStorage(tbl *catalog.Table) (Storage, error) {
 		return nil, fmt.Errorf("missing app_id or app_secret for Lark table %s", tbl.Name)
 	}
 
+	// Support both folder name and direct token for root
+	folderName := tbl.Option("folder_name", "")
+	if folderName == "" {
+		folderName = tbl.Option("lark_folder_name", "")
+	}
 	rootToken := tbl.Option("root_token", "")
 	if rootToken == "" {
 		rootToken = tbl.Option("lark_root_token", "")
 		rawURL := tbl.Option("url", "")
 		if rootToken == "" && rawURL != "" {
 			if u, err := url.Parse(rawURL); err == nil && u.Scheme == "lark" {
-				rootToken = u.Host
+				folderName = u.Host
 			}
 		}
 	}
-	if rootToken == "" {
-		return nil, fmt.Errorf("missing root_token for Lark table %s", tbl.Name)
+	if rootToken == "" && folderName == "" {
+		return nil, fmt.Errorf("missing root: configure folder_name or root_token for Lark table %s", tbl.Name)
 	}
 
 	chatID := tbl.Option("chat_id", "")
@@ -81,12 +89,75 @@ func newLarkStorage(tbl *catalog.Table) (Storage, error) {
 	}
 
 	return &larkStorage{
-		appID:     appID,
-		appSecret: appSecret,
-		rootToken: rootToken,
-		chatID:    chatID,
-		httpCli:   &http.Client{Timeout: larkHTTPTimeout},
+		appID:      appID,
+		appSecret:  appSecret,
+		folderName: folderName,
+		rootToken:  rootToken,
+		chatID:     chatID,
+		httpCli:    &http.Client{Timeout: larkHTTPTimeout},
 	}, nil
+}
+
+// resolveRoot lazily resolves the root token from folderName or returns rootToken directly.
+func (s *larkStorage) resolveRoot(ctx context.Context) (string, error) {
+	s.rootOnce.Do(func() {
+		if s.rootToken != "" {
+			return // Already have a direct token
+		}
+		if s.folderName == "" {
+			s.rootErr = fmt.Errorf("missing root: configure folder_name or root_token")
+			return
+		}
+		// Look up or create the folder under the app's drive root
+		appRoot, err := s.getAppRoot(ctx)
+		if err != nil {
+			s.rootErr = fmt.Errorf("get app root failed: %w", err)
+			return
+		}
+		token, err := s.ensureFolder(ctx, appRoot, s.folderName)
+		if err != nil {
+			s.rootErr = fmt.Errorf("resolve folder %q failed: %w", s.folderName, err)
+			return
+		}
+		s.rootToken = token
+	})
+	return s.rootToken, s.rootErr
+}
+
+// getAppRoot finds the app's drive root folder token.
+func (s *larkStorage) getAppRoot(ctx context.Context) (string, error) {
+	// Try the root_folder API endpoint
+	data, err := s.doGet(ctx, larkBaseURL+"/open-apis/drive/v1/root_folder")
+	if err == nil {
+		var resp struct {
+			Code int `json:"code"`
+			Data struct {
+				Token string `json:"token"`
+			} `json:"data"`
+		}
+		if json.Unmarshal(data, &resp) == nil && resp.Code == 0 && resp.Data.Token != "" {
+			return resp.Data.Token, nil
+		}
+	}
+
+	// Fallback: list top-level files with empty parent to find root
+	data, err = s.doGet(ctx, larkBaseURL+larkDriveAPI+"?page_size=1")
+	if err == nil {
+		var resp struct {
+			Code int `json:"code"`
+			Data struct {
+				Entries []struct {
+					Token string `json:"token"`
+				} `json:"files"`
+			} `json:"data"`
+		}
+		if json.Unmarshal(data, &resp) == nil && resp.Code == 0 && len(resp.Data.Entries) > 0 {
+			// If we can list files at root level, the parent of these files is the root
+			return "", fmt.Errorf("cannot determine app root folder; set folder_name to a known folder or use root_token directly")
+		}
+	}
+
+	return "", fmt.Errorf("cannot determine app root folder; use root_token directly or ensure folder_name exists under the app's drive space")
 }
 
 func (s *larkStorage) getToken(ctx context.Context) (string, error) {
@@ -340,14 +411,30 @@ func (s *larkStorage) getFileMeta(ctx context.Context, token string) (*larkFileE
 	}, nil
 }
 
+// root returns the resolved root token, calling resolveRoot lazily if needed.
+func (s *larkStorage) root(ctx context.Context) (string, error) {
+	token, err := s.resolveRoot(ctx)
+	if err != nil {
+		return "", err
+	}
+	if token == "" {
+		return "", fmt.Errorf("root token not available")
+	}
+	return token, nil
+}
+
 func (s *larkStorage) resolvePath(ctx context.Context, name string) (token string, isFolder bool, err error) {
 	name = strings.TrimPrefix(name, "/")
 	name = strings.TrimSuffix(name, "/")
+	rootToken, err := s.root(ctx)
+	if err != nil {
+		return "", false, err
+	}
 	if name == "" {
-		return s.rootToken, true, nil
+		return rootToken, true, nil
 	}
 	parts := strings.Split(name, "/")
-	currentToken := s.rootToken
+	currentToken := rootToken
 	for i, part := range parts {
 		t, isDir, err := s.resolveChildToken(ctx, currentToken, part)
 		if err != nil {
@@ -397,12 +484,16 @@ func (s *larkStorage) ensurePath(ctx context.Context, name string) (parentToken,
 	name = strings.TrimPrefix(name, "/")
 	name = strings.TrimSuffix(name, "/")
 	dir, file := path.Split(name)
+	rootToken, err := s.root(ctx)
+	if err != nil {
+		return "", "", err
+	}
 	if dir == "" {
-		return s.rootToken, file, nil
+		return rootToken, file, nil
 	}
 	dir = strings.TrimSuffix(dir, "/")
 	parts := strings.Split(dir, "/")
-	currentToken := s.rootToken
+	currentToken := rootToken
 	for _, part := range parts {
 		currentToken, err = s.ensureFolder(ctx, currentToken, part)
 		if err != nil {
@@ -480,7 +571,11 @@ func (s *larkStorage) Glob(ctx context.Context, pattern string) ([]string, error
 
 	var parentToken string
 	if dir == "" {
-		parentToken = s.rootToken
+		var err error
+		parentToken, err = s.root(ctx)
+		if err != nil {
+			return nil, err
+		}
 	} else {
 		t, _, err := s.resolvePath(ctx, dir)
 		if err != nil {
@@ -520,7 +615,11 @@ func (s *larkStorage) List(ctx context.Context, dirPath string) ([]string, error
 
 	var parentToken string
 	if dirPath == "" {
-		parentToken = s.rootToken
+		var err error
+		parentToken, err = s.root(ctx)
+		if err != nil {
+			return nil, err
+		}
 	} else {
 		t, _, err := s.resolvePath(ctx, dirPath)
 		if err != nil {
@@ -554,16 +653,19 @@ func (s *larkStorage) Mkdir(ctx context.Context, name string, perm fs.FileMode) 
 	if name == "" {
 		return nil
 	}
+	rootToken, err := s.root(ctx)
+	if err != nil {
+		return err
+	}
 	parts := strings.Split(name, "/")
-	parentToken := s.rootToken
+	parentToken := rootToken
 	for i := 0; i < len(parts)-1; i++ {
-		var err error
 		parentToken, err = s.ensureFolder(ctx, parentToken, parts[i])
 		if err != nil {
 			return err
 		}
 	}
-	_, err := s.ensureFolder(ctx, parentToken, parts[len(parts)-1])
+	_, err = s.ensureFolder(ctx, parentToken, parts[len(parts)-1])
 	return err
 }
 
@@ -575,9 +677,12 @@ func (s *larkStorage) MkdirAll(ctx context.Context, name string, perm fs.FileMod
 	if name == "" {
 		return nil
 	}
-	currentToken := s.rootToken
+	rootToken, err := s.root(ctx)
+	if err != nil {
+		return err
+	}
+	currentToken := rootToken
 	for _, part := range strings.Split(name, "/") {
-		var err error
 		currentToken, err = s.ensureFolder(ctx, currentToken, part)
 		if err != nil {
 			return err
