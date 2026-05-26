@@ -9,6 +9,18 @@ import (
 
 func registerWindowBuiltins() {
 	RegisterFunc(&FuncDef{
+		Name: "ROW_NUMBER", Type: FuncWindow, MinArgs: 0, MaxArgs: 0,
+		WindowFn: windowRowNumber,
+	})
+	RegisterFunc(&FuncDef{
+		Name: "RANK", Type: FuncWindow, MinArgs: 0, MaxArgs: 0,
+		WindowFn: windowRank,
+	})
+	RegisterFunc(&FuncDef{
+		Name: "DENSE_RANK", Type: FuncWindow, MinArgs: 0, MaxArgs: 0,
+		WindowFn: windowDenseRank,
+	})
+	RegisterFunc(&FuncDef{
 		Name: "LEAD", Type: FuncWindow, MinArgs: 1, MaxArgs: 3,
 		WindowFn: windowLead,
 	})
@@ -40,6 +52,29 @@ func registerWindowBuiltins() {
 		Name: "NTH_VALUE", Type: FuncWindow, MinArgs: 2, MaxArgs: 2,
 		WindowFn: windowNthValue,
 	})
+}
+
+func windowRowNumber(rows []storage.Row, args []string, orderBy []parser.SortOrder, colKey string) []storage.Row {
+	for i := range rows {
+		rows[i][colKey] = strconv.Itoa(i + 1)
+	}
+	return rows
+}
+
+func windowRank(rows []storage.Row, args []string, orderBy []parser.SortOrder, colKey string) []storage.Row {
+	if len(rows) == 0 {
+		return rows
+	}
+	computeRank(rows, colKey, orderBy, false)
+	return rows
+}
+
+func windowDenseRank(rows []storage.Row, args []string, orderBy []parser.SortOrder, colKey string) []storage.Row {
+	if len(rows) == 0 {
+		return rows
+	}
+	computeRank(rows, colKey, orderBy, true)
+	return rows
 }
 
 func windowLead(rows []storage.Row, args []string, orderBy []parser.SortOrder, colKey string) []storage.Row {

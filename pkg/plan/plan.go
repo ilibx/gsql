@@ -1142,14 +1142,6 @@ func computePartitionWindow(rows []storage.Row, windowExprs []parser.WindowExpr)
 		}
 		colKey := w.FuncName + "(" + strings.Join(w.Args, ",") + ")"
 		switch w.FuncName {
-		case "ROW_NUMBER":
-			for i := range rows {
-				rows[i][colKey] = strconv.Itoa(i + 1)
-			}
-		case "RANK":
-			computeRank(rows, colKey, w.OrderBy, false)
-		case "DENSE_RANK":
-			computeRank(rows, colKey, w.OrderBy, true)
 		case "COUNT":
 			computeWindowAggFrame(rows, colKey, w.Args, "COUNT", w.Frame, w.OrderBy)
 		case "SUM":
