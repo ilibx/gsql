@@ -15,6 +15,7 @@ import (
 type AggregateDef struct {
 	FuncName string
 	Column   string
+	Args     []string
 	Distinct bool
 }
 
@@ -326,7 +327,11 @@ func (n *AggregateNode) Execute() ([]storage.Row, error) {
 				distinctPrefix = "DISTINCT "
 			}
 			colKey := agg.FuncName + "(" + distinctPrefix + agg.Column + ")"
-			row[colKey] = computeAggregate(ge.group, agg.FuncName, agg.Column, agg.Distinct)
+			args := agg.Args
+			if len(args) == 0 && agg.Column != "" {
+				args = []string{agg.Column}
+			}
+			row[colKey] = computeAggregate(ge.group, agg.FuncName, agg.Column, agg.Distinct, args)
 		}
 		result = append(result, row)
 	}
@@ -355,79 +360,112 @@ func makeGroupKey(row storage.Row, cols []string) string {
 	return strings.Join(parts, "\x00")
 }
 
-func computeAggregate(rows []storage.Row, funcName, column string, distinct bool) string {
-	switch funcName {
-	case "COUNT":
-		if distinct {
-			seen := make(map[string]bool)
-			for _, row := range rows {
-				if column == "*" {
-					seen["*"] = true
-				} else if v := row[column]; v != "" {
-					seen[v] = true
-				}
-			}
-			return strconv.Itoa(len(seen))
-		}
-		return strconv.Itoa(len(rows))
-	case "SUM":
-		var total float64
-		for _, row := range rows {
-			v, err := strconv.ParseFloat(row[column], 64)
-			if err == nil {
-				total += v
-			}
-		}
-		return strconv.FormatFloat(total, 'f', -1, 64)
-	case "AVG":
-		var total float64
-		count := 0
-		for _, row := range rows {
-			v, err := strconv.ParseFloat(row[column], 64)
-			if err == nil {
-				total += v
-				count++
-			}
-		}
-		if count == 0 {
-			return "0"
-		}
-		return strconv.FormatFloat(total/float64(count), 'f', -1, 64)
-	case "MIN":
-		var min string
-		set := false
-		for _, row := range rows {
-			if row[column] == "" {
-				continue
-			}
-			if !set || compareValues(row[column], min, "<") {
-				min = row[column]
-				set = true
-			}
-		}
-		if !set && len(rows) > 0 {
-			min = rows[0][column]
-		}
-		return min
-	case "MAX":
-		var max string
-		set := false
-		for _, row := range rows {
-			if row[column] == "" {
-				continue
-			}
-			if !set || compareValues(row[column], max, ">") {
-				max = row[column]
-				set = true
-			}
-		}
-		if !set && len(rows) > 0 {
-			max = rows[0][column]
-		}
-		return max
-	default:
-		return ""
+type LateralViewExplodeNode struct {
+	Child     PlanNode
+	Col       string // column to explode
+	Alias     string // output column alias (value for POSEXPLODE/EXPLODE(map))
+	PosAlias  string // position column alias (for POSEXPLODE) or key alias (for EXPLODE(map))
+	IsOuter   bool   // OUTER: keep row even if explode column is empty
+	WithPos   bool   // true for POSEXPLODE (integer index)
+	WithMap   bool   // true for EXPLODE(map) (key-value pairs)
+}
+
+func NewLateralViewExplodeNode(child PlanNode, col, alias string, isOuter ...bool) *LateralViewExplodeNode {
+	outer := false
+	if len(isOuter) > 0 {
+		outer = isOuter[0]
 	}
+	return &LateralViewExplodeNode{Child: child, Col: col, Alias: alias, IsOuter: outer}
+}
+
+func (n *LateralViewExplodeNode) Type() string {
+	if n.WithPos {
+		return "LateralViewPosExplode"
+	}
+	return "LateralViewExplode"
+}
+
+func (n *LateralViewExplodeNode) Execute() ([]storage.Row, error) {
+	input, err := n.Child.Execute()
+	if err != nil {
+		return nil, err
+	}
+	var result []storage.Row
+	for _, row := range input {
+		val := row[n.Col]
+		var elements []string
+		if val == "" {
+			elements = nil
+		} else {
+			elements = strings.Split(val, ",")
+		}
+		if len(elements) == 0 {
+			if n.IsOuter {
+				newRow := make(storage.Row)
+				for k, v := range row {
+					newRow[k] = v
+				}
+				newRow[n.Alias] = ""
+				if n.WithPos || n.WithMap {
+					newRow[n.PosAlias] = ""
+				}
+				result = append(result, newRow)
+			}
+			continue
+		}
+		if n.WithMap {
+			// EXPLODE(map): elements come as k1,v1,k2,v2,...
+			for i := 0; i+1 < len(elements); i += 2 {
+				newRow := make(storage.Row)
+				for k, v := range row {
+					newRow[k] = v
+				}
+				newRow[n.PosAlias] = strings.TrimSpace(elements[i])
+				newRow[n.Alias] = strings.TrimSpace(elements[i+1])
+				result = append(result, newRow)
+			}
+		} else if n.WithPos {
+			// POSEXPLODE: index + value
+			for idx, elem := range elements {
+				newRow := make(storage.Row)
+				for k, v := range row {
+					newRow[k] = v
+				}
+				newRow[n.Alias] = strings.TrimSpace(elem)
+				newRow[n.PosAlias] = strconv.Itoa(idx)
+				result = append(result, newRow)
+			}
+		} else {
+			// EXPLODE(arr): just values
+			for _, elem := range elements {
+				newRow := make(storage.Row)
+				for k, v := range row {
+					newRow[k] = v
+				}
+				newRow[n.Alias] = strings.TrimSpace(elem)
+				result = append(result, newRow)
+			}
+		}
+	}
+	return result, nil
+}
+
+func (n *LateralViewExplodeNode) Explain(indent int) string {
+	prefix := strings.Repeat("  ", indent)
+	outer := ""
+	if n.IsOuter {
+		outer = " OUTER"
+	}
+	name := "LateralViewExplode"
+	pos := ""
+	if n.WithPos {
+		name = "LateralViewPosExplode"
+		pos = fmt.Sprintf(", pos=%s", n.PosAlias)
+	} else if n.WithMap {
+		name = "LateralViewExplodeMap"
+		pos = fmt.Sprintf(", key=%s", n.PosAlias)
+	}
+	return fmt.Sprintf("%s%s%s(col=%s, alias=%s%s)\n%s", prefix, name, outer, n.Col, n.Alias, pos, n.Child.Explain(indent+1))
 }
 
 type JoinNode struct {
@@ -655,6 +693,13 @@ func evaluateExpression(row storage.Row, expr parser.Expression) bool {
 			left = evaluateExpressionValue(row, v.Expr)
 		} else if v.Column == "" {
 			left = v.Value
+		} else if strings.Contains(v.Column, "(") {
+			// function call result stored in Expr, or compute from column name
+			if v.Expr != nil {
+				left = evaluateExpressionValue(row, v.Expr)
+			} else {
+				left = row[v.Column]
+			}
 		} else {
 			left = row[v.Column]
 		}
@@ -676,6 +721,9 @@ func evaluateExpression(row storage.Row, expr parser.Expression) bool {
 		default:
 			return false
 		}
+	case *parser.FuncCallExpr:
+		val := evaluateExpressionValue(row, v)
+		return val == "true" || val == "TRUE" || val == "1"
 	case *parser.LogicalExpr:
 		left := evaluateExpression(row, v.Left)
 		right := evaluateExpression(row, v.Right)
@@ -752,35 +800,18 @@ func evaluateExpressionValue(row storage.Row, expr parser.Expression) string {
 			return "true"
 		}
 		return "false"
-	case *parser.InExpr:
-		val := row[v.Column]
-		in := stringInSlice(val, v.Values)
-		if v.Not {
-			in = !in
-		}
-		if in {
-			return "true"
-		}
-		return "false"
-	case *parser.BinaryExpr:
-		left := evaluateExpressionValue(row, v.Left)
-		right := evaluateExpressionValue(row, v.Right)
-		leftNum, lErr := strconv.ParseFloat(left, 64)
-		rightNum, rErr := strconv.ParseFloat(right, 64)
-		if lErr == nil && rErr == nil {
-			switch v.Operator {
-			case "+":
-				return formatFloat(leftNum + rightNum)
-			case "-":
-				return formatFloat(leftNum - rightNum)
-			case "*":
-				return formatFloat(leftNum * rightNum)
-			case "/":
-				if rightNum == 0 {
-					return "0"
+	case *parser.FuncCallExpr:
+		if fn, ok := LookupFunc(v.FuncName); ok && fn.ScalarFn != nil {
+			args := make([]string, len(v.Args))
+			for i, a := range v.Args {
+				// Resolve column references; pass through literals and type names
+				if rowVal, exists := row[a]; exists {
+					args[i] = rowVal
+				} else {
+					args[i] = a
 				}
-				return formatFloat(leftNum / rightNum)
 			}
+			return fn.ScalarFn(args)
 		}
 		return ""
 	case *parser.LogicalExpr:
@@ -847,36 +878,6 @@ func matchLike(value, pattern string) bool {
 		return strings.HasPrefix(value, strings.TrimSuffix(pattern, "%"))
 	}
 	return value == pattern
-}
-
-func compareValues(left, right, op string) bool {
-	leftNum, lErr := strconv.ParseFloat(left, 64)
-	rightNum, rErr := strconv.ParseFloat(right, 64)
-	if lErr == nil && rErr == nil {
-		switch op {
-		case "<":
-			return leftNum < rightNum
-		case ">":
-			return leftNum > rightNum
-		case "<=":
-			return leftNum <= rightNum
-		case ">=":
-			return leftNum >= rightNum
-		}
-		return false
-	}
-	switch op {
-	case "<":
-		return left < right
-	case ">":
-		return left > right
-	case "<=":
-		return left <= right
-	case ">=":
-		return left >= right
-	default:
-		return false
-	}
 }
 
 type PhysicalPlanContext struct {
@@ -1150,15 +1151,20 @@ func computePartitionWindow(rows []storage.Row, windowExprs []parser.WindowExpr)
 		case "DENSE_RANK":
 			computeRank(rows, colKey, w.OrderBy, true)
 		case "COUNT":
-			computeWindowAgg(rows, colKey, w.Args, "COUNT")
+			computeWindowAggFrame(rows, colKey, w.Args, "COUNT", w.Frame, w.OrderBy)
 		case "SUM":
-			computeWindowAgg(rows, colKey, w.Args, "SUM")
+			computeWindowAggFrame(rows, colKey, w.Args, "SUM", w.Frame, w.OrderBy)
 		case "AVG":
-			computeWindowAgg(rows, colKey, w.Args, "AVG")
+			computeWindowAggFrame(rows, colKey, w.Args, "AVG", w.Frame, w.OrderBy)
 		case "MIN":
-			computeWindowAgg(rows, colKey, w.Args, "MIN")
+			computeWindowAggFrame(rows, colKey, w.Args, "MIN", w.Frame, w.OrderBy)
 		case "MAX":
-			computeWindowAgg(rows, colKey, w.Args, "MAX")
+			computeWindowAggFrame(rows, colKey, w.Args, "MAX", w.Frame, w.OrderBy)
+		default:
+			// Lookup registered window functions (LEAD, LAG, NTILE, etc.)
+			if fn, ok := LookupFunc(w.FuncName); ok && fn.WindowFn != nil {
+				rows = fn.WindowFn(rows, w.Args, w.OrderBy, colKey)
+			}
 		}
 	}
 	return rows
@@ -1195,45 +1201,187 @@ func rowsEqualByOrder(a, b storage.Row, orderBy []parser.SortOrder) bool {
 	return true
 }
 
-func computeWindowAgg(rows []storage.Row, colKey string, args []string, aggFunc string) {
+func computeWindowAggFrame(rows []storage.Row, colKey string, args []string, aggFunc string, frame *parser.WindowFrame, orderBy []parser.SortOrder) {
 	if len(args) == 0 || args[0] == "" {
 		return
 	}
 	col := args[0]
-	var total float64
-	count := 0
-	for _, row := range rows {
-		val := row[col]
-		if val == "" {
-			continue
-		}
-		num, err := strconv.ParseFloat(val, 64)
-		if err != nil {
-			continue
+	// Set ORDER BY column on frame for RANGE frame calculations
+	if frame != nil && len(orderBy) > 0 {
+		frame.OrderBy = orderBy[0].Column
+	}
+	for i := range rows {
+		start, end := getFrameRange(rows, i, frame)
+		var total float64
+		count := 0
+		minVal := ""
+		maxVal := ""
+		for j := start; j <= end && j < len(rows); j++ {
+			val := rows[j][col]
+			if val == "" {
+				continue
+			}
+			num, err := strconv.ParseFloat(val, 64)
+			if err != nil {
+				continue
+			}
+			switch aggFunc {
+			case "COUNT":
+				count++
+			case "SUM", "AVG":
+				total += num
+				count++
+			case "MIN":
+				if minVal == "" || compareValues(val, minVal, "<") {
+					minVal = val
+				}
+			case "MAX":
+				if maxVal == "" || compareValues(val, maxVal, ">") {
+					maxVal = val
+				}
+			}
 		}
 		switch aggFunc {
 		case "COUNT":
-			count++
-		case "SUM", "AVG", "MIN", "MAX":
-			total += num
-			count++
+			rows[i][colKey] = strconv.Itoa(count)
+		case "SUM":
+			rows[i][colKey] = strconv.FormatFloat(total, 'f', -1, 64)
+		case "AVG":
+			if count == 0 {
+				rows[i][colKey] = "0"
+			} else {
+				rows[i][colKey] = strconv.FormatFloat(total/float64(count), 'f', -1, 64)
+			}
+		case "MIN":
+			rows[i][colKey] = minVal
+		case "MAX":
+			rows[i][colKey] = maxVal
 		}
 	}
-	countVal := count
-	if aggFunc == "COUNT" {
-		for i := range rows {
-			rows[i][colKey] = strconv.Itoa(countVal)
+}
+
+func getFrameRange(rows []storage.Row, currentIdx int, frame *parser.WindowFrame) (int, int) {
+	n := len(rows)
+	if frame == nil {
+		return 0, n - 1
+	}
+	if frame.FrameType == parser.FrameRows || frame.OrderBy == "" {
+		// ROWS: physical offsets (default if no ORDER BY)
+		start := resolveFrameBoundRow(n, currentIdx, frame.Start)
+		end := resolveFrameBoundRow(n, currentIdx, frame.End)
+		if start < 0 {
+			start = 0
 		}
-	} else if aggFunc == "SUM" {
-		str := strconv.FormatFloat(total, 'f', -1, 64)
-		for i := range rows {
-			rows[i][colKey] = str
+		if end >= n {
+			end = n - 1
 		}
-	} else if aggFunc == "AVG" {
-		avg := total / float64(count)
-		str := strconv.FormatFloat(avg, 'f', -1, 64)
-		for i := range rows {
-			rows[i][colKey] = str
+		return start, end
+	}
+	// RANGE: logical offsets based on ORDER BY value
+	return resolveFrameRange(rows, currentIdx, frame)
+}
+
+func resolveFrameBoundRow(n, currentIdx int, bound parser.WindowFrameBoundary) int {
+	switch bound.BoundType {
+	case parser.FrameUnboundedPreceding:
+		return 0
+	case parser.FrameNPreceding:
+		return currentIdx - bound.N
+	case parser.FrameCurrentRow:
+		return currentIdx
+	case parser.FrameNFollowing:
+		return currentIdx + bound.N
+	case parser.FrameUnboundedFollowing:
+		return n - 1
+	default:
+		return 0
+	}
+}
+
+func resolveFrameRange(rows []storage.Row, currentIdx int, frame *parser.WindowFrame) (int, int) {
+	n := len(rows)
+	if n == 0 {
+		return 0, 0
+	}
+
+	currentVal, err := strconv.ParseFloat(rows[currentIdx][frame.OrderBy], 64)
+	if err != nil {
+		return 0, n - 1 // fallback to full range if value is not numeric
+	}
+
+	start := 0
+	end := n - 1
+
+	// Resolve start boundary
+	switch frame.Start.BoundType {
+	case parser.FrameUnboundedPreceding:
+		start = 0
+	case parser.FrameNPreceding:
+		threshold := currentVal - float64(frame.Start.N)
+		start = findRangeStart(rows, frame.OrderBy, threshold)
+	case parser.FrameCurrentRow:
+		start = findRangeStart(rows, frame.OrderBy, currentVal)
+	case parser.FrameNFollowing:
+		threshold := currentVal + float64(frame.Start.N)
+		start = findRangeStart(rows, frame.OrderBy, threshold)
+	case parser.FrameUnboundedFollowing:
+		start = 0 // start from beginning, but also check end below
+	default:
+		start = 0
+	}
+
+	// Resolve end boundary
+	switch frame.End.BoundType {
+	case parser.FrameUnboundedPreceding:
+		end = findRangeEnd(rows, frame.OrderBy, currentVal-float64(frame.End.N)) // shouldn't happen
+	case parser.FrameNPreceding:
+		threshold := currentVal - float64(frame.End.N)
+		end = findRangeEnd(rows, frame.OrderBy, threshold)
+	case parser.FrameCurrentRow:
+		end = findRangeEnd(rows, frame.OrderBy, currentVal)
+	case parser.FrameNFollowing:
+		threshold := currentVal + float64(frame.End.N)
+		end = findRangeEnd(rows, frame.OrderBy, threshold)
+	case parser.FrameUnboundedFollowing:
+		end = n - 1
+	default:
+		end = n - 1
+	}
+
+	if start < 0 {
+		start = 0
+	}
+	if end >= n {
+		end = n - 1
+	}
+	if start > end {
+		start = end
+	}
+	return start, end
+}
+
+func findRangeStart(rows []storage.Row, orderCol string, threshold float64) int {
+	for i, row := range rows {
+		val, err := strconv.ParseFloat(row[orderCol], 64)
+		if err != nil {
+			continue
+		}
+		if val >= threshold {
+			return i
 		}
 	}
+	return 0
+}
+
+func findRangeEnd(rows []storage.Row, orderCol string, threshold float64) int {
+	for i := len(rows) - 1; i >= 0; i-- {
+		val, err := strconv.ParseFloat(rows[i][orderCol], 64)
+		if err != nil {
+			continue
+		}
+		if val <= threshold {
+			return i
+		}
+	}
+	return len(rows) - 1
 }

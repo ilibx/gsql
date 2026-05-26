@@ -85,6 +85,17 @@ const (
 	EXISTS_KW
 	VALUES
 	EXPLAIN
+	CAST_KW
+	ROWS_KW
+	RANGE_KW
+	BETWEEN_KW
+	UNBOUNDED_KW
+	PRECEDING_KW
+	FOLLOWING_KW
+	CURRENT_KW
+	LATERAL_KW
+	VIEW_KW
+	OUTER_KW
 )
 
 var keywords = map[string]TokenType{
@@ -125,6 +136,17 @@ var keywords = map[string]TokenType{
 	"exists":    EXISTS_KW,
 	"values":    VALUES,
 	"explain":   EXPLAIN,
+	"cast":        CAST_KW,
+	"rows":        ROWS_KW,
+	"range":       RANGE_KW,
+	"between":     BETWEEN_KW,
+	"unbounded":   UNBOUNDED_KW,
+	"preceding":   PRECEDING_KW,
+	"following":   FOLLOWING_KW,
+	"current":     CURRENT_KW,
+	"lateral":     LATERAL_KW,
+	"view":        VIEW_KW,
+	"outer":       OUTER_KW,
 }
 
 func NewParser() *Parser {
@@ -814,6 +836,69 @@ func (p *Parser) parseSelectQuery() (*SelectQuery, error) {
 		joins = append(joins, JoinClause{RightTable: rightTable, RightAlias: rightAlias, LeftColumn: leftCol, RightColumn: rightCol})
 	}
 
+	var lateralViews []LateralView
+	for p.curIs(LATERAL_KW) {
+		p.nextToken()
+		if p.cur.Type != VIEW_KW {
+			return nil, fmt.Errorf("expected VIEW after LATERAL")
+		}
+		p.nextToken()
+		isOuter := false
+		if p.cur.Type == OUTER_KW {
+			isOuter = true
+			p.nextToken()
+		}
+		if p.cur.Type != IDENT {
+			return nil, fmt.Errorf("expected EXPLODE or POSEXPLODE in LATERAL VIEW")
+		}
+		funcName := strings.ToUpper(p.cur.Literal)
+		if funcName != "EXPLODE" && funcName != "POSEXPLODE" {
+			return nil, fmt.Errorf("expected EXPLODE or POSEXPLODE in LATERAL VIEW, got %s", funcName)
+		}
+		p.nextToken()
+		if p.cur.Type != LPAREN {
+			return nil, fmt.Errorf("expected ( after %s", funcName)
+		}
+		p.nextToken()
+		args, err := p.parseFuncArgs()
+		if err != nil {
+			return nil, fmt.Errorf("in LATERAL VIEW %s(): %w", funcName, err)
+		}
+		if p.cur.Type != RPAREN {
+			return nil, fmt.Errorf("expected ) after %s arguments", funcName)
+		}
+		p.nextToken()
+		if p.cur.Type != IDENT {
+			return nil, fmt.Errorf("expected table alias after %s() in LATERAL VIEW", funcName)
+		}
+		tableName := p.cur.Literal
+		p.nextToken()
+		if p.curIs(AS) {
+			p.nextToken()
+		}
+		if p.cur.Type != IDENT {
+			return nil, fmt.Errorf("expected column alias in LATERAL VIEW")
+		}
+		colNames := []string{p.cur.Literal}
+		p.nextToken()
+		// POSEXPLODE(arr) tbl AS pos,val or EXPLODE(map) tbl AS key,val
+		for p.cur.Type == COMMA {
+			p.nextToken()
+			if p.cur.Type != IDENT {
+				return nil, fmt.Errorf("expected column alias after comma in LATERAL VIEW")
+			}
+			colNames = append(colNames, p.cur.Literal)
+			p.nextToken()
+		}
+		lateralViews = append(lateralViews, LateralView{
+			IsOuter:   isOuter,
+			FuncName:  funcName,
+			Args:      args,
+			TableName: tableName,
+			ColNames:  colNames,
+		})
+	}
+
 	var where Expression
 	var groupBy []string
 	var having Expression
@@ -893,6 +978,7 @@ func (p *Parser) parseSelectQuery() (*SelectQuery, error) {
 		Limit:         limit,
 		HasLimit:      hasLimit,
 		ColumnAliases: colAliases,
+		LateralViews:  lateralViews,
 	}
 	if len(aggregates) > 0 && len(groupBy) == 0 && len(columns) == 0 {
 		query.Columns = columns
@@ -1034,26 +1120,20 @@ func (p *Parser) parseComparison() (Expression, error) {
 		funcName := strings.ToUpper(p.cur.Literal)
 		p.nextToken()
 		p.nextToken()
-		var col string
-		var parseErr error
-		if p.cur.Type == ASTERISK {
-			col = "*"
-			p.nextToken()
-		} else if p.cur.Type == IDENT {
-			col, parseErr = p.parseDottedIdentifier()
-			if parseErr != nil {
-				return nil, fmt.Errorf("inside %s(): %w", funcName, parseErr)
-			}
-		} else {
-			return nil, fmt.Errorf("expected column or * inside %s()", funcName)
+		args, parseErr := p.parseFuncArgs()
+		if parseErr != nil {
+			return nil, fmt.Errorf("inside %s(): %w", funcName, parseErr)
 		}
 		if p.cur.Type != RPAREN {
 			return nil, fmt.Errorf("expected ) after argument in %s()", funcName)
 		}
 		p.nextToken()
-		left := funcName + "(" + col + ")"
-		// After aggregate: check for IS NULL, IS NOT NULL, IN, NOT IN, or comparison
-		return p.parsePostAggregateOp(left)
+		funcCall := &FuncCallExpr{FuncName: funcName, Args: args}
+		// If followed by a comparison operator, wrap in ComparisonExpr
+		if isComparisonOperator(p.cur.Type) || p.cur.Type == IS || (p.cur.Type == NOT && p.peekIs(IN_KEYWORD)) || p.cur.Type == IN_KEYWORD {
+			return p.parsePostFuncCall(funcCall)
+		}
+		return funcCall, nil
 	}
 
 	// Check for NOT EXISTS
@@ -1091,6 +1171,18 @@ func (p *Parser) parseComparison() (Expression, error) {
 		}
 		p.nextToken()
 		return &ExistsExpr{Subquery: subquery}, nil
+	}
+
+	if p.cur.Type == CAST_KW {
+		castExpr, err := p.parseCastExpr()
+		if err != nil {
+			return nil, err
+		}
+		col := "CAST(" + strings.Join(castExpr.Args, ",") + ")"
+		if isComparisonOperator(p.cur.Type) || p.cur.Type == IS || (p.cur.Type == NOT && p.peekIs(IN_KEYWORD)) || p.cur.Type == IN_KEYWORD {
+			return p.parsePostFuncCall(castExpr)
+		}
+		return castExpr, nil
 	}
 
 	if p.cur.Type != IDENT {
@@ -1206,6 +1298,52 @@ func (p *Parser) parsePostAggregateOp(left string) (Expression, error) {
 	return &ComparisonExpr{Column: left, Operator: operator, Value: val}, nil
 }
 
+func (p *Parser) parsePostFuncCall(funcCall *FuncCallExpr) (Expression, error) {
+	if p.cur.Type == IS {
+		p.nextToken()
+		if p.cur.Type == NOT {
+			p.nextToken()
+			if p.cur.Type != NULL_KEYWORD {
+				return nil, fmt.Errorf("expected NULL after IS NOT")
+			}
+			p.nextToken()
+			return &NullTestExpr{Column: exprToString(funcCall), IsNull: false}, nil
+		}
+		if p.cur.Type != NULL_KEYWORD {
+			return nil, fmt.Errorf("expected NULL after IS")
+		}
+		p.nextToken()
+		return &NullTestExpr{Column: exprToString(funcCall), IsNull: true}, nil
+	}
+	if p.cur.Type == NOT && p.peekIs(IN_KEYWORD) {
+		p.nextToken()
+		p.nextToken()
+		return p.parseInExpr(exprToString(funcCall), true)
+	}
+	if p.cur.Type == IN_KEYWORD {
+		p.nextToken()
+		return p.parseInExpr(exprToString(funcCall), false)
+	}
+	if !isComparisonOperator(p.cur.Type) {
+		return nil, fmt.Errorf("expected comparison operator after function, got %s", tokenName(p.cur.Type))
+	}
+	operator := p.cur.Literal
+	p.nextToken()
+	if p.cur.Type == IDENT {
+		rightCol, parseErr := p.parseDottedIdentifier()
+		if parseErr != nil {
+			return nil, parseErr
+		}
+		return &ComparisonExpr{Column: exprToString(funcCall), Operator: operator, RightColumn: rightCol, Expr: funcCall}, nil
+	}
+	if p.cur.Type != STRING && p.cur.Type != NUMBER {
+		return nil, fmt.Errorf("expected literal on right side of expression, got %s", tokenName(p.cur.Type))
+	}
+	val := p.cur.Literal
+	p.nextToken()
+	return &ComparisonExpr{Column: exprToString(funcCall), Operator: operator, Value: val, Expr: funcCall}, nil
+}
+
 func (p *Parser) parseInExpr(col string, not bool) (Expression, error) {
 	if p.cur.Type != LPAREN {
 		return nil, fmt.Errorf("expected ( after IN")
@@ -1290,6 +1428,30 @@ func (p *Parser) parseSelectItems() ([]string, []Expression, []AggregateExpr, []
 			}
 			break
 		}
+		if p.cur.Type == CAST_KW {
+			castExpr, err := p.parseCastExpr()
+			if err != nil {
+				return nil, nil, nil, nil, nil, err
+			}
+			colKey := castExpr.FuncName + "(" + strings.Join(castExpr.Args, ",") + ")"
+			columns = append(columns, colKey)
+			columnExprs = append(columnExprs, castExpr)
+			aggregates = append(aggregates, AggregateExpr{})
+			windowExprs = append(windowExprs, WindowExpr{})
+			if p.curIs(AS) || (p.cur.Type == IDENT && len(columns) > 0) {
+				if p.curIs(AS) {
+					p.nextToken()
+				}
+				if p.cur.Type == IDENT {
+					colAliases[p.cur.Literal] = colKey
+				}
+			}
+			if p.cur.Type == COMMA {
+				p.nextToken()
+				continue
+			}
+			break
+		}
 		if p.cur.Type != IDENT {
 			// Literal expressions: STRING or NUMBER in SELECT (e.g., '2026' AS year)
 			if p.cur.Type == STRING || p.cur.Type == NUMBER {
@@ -1328,23 +1490,9 @@ func (p *Parser) parseSelectItems() ([]string, []Expression, []AggregateExpr, []
 				distinct = true
 				p.nextToken()
 			}
-			var args []string
-			if p.cur.Type == ASTERISK {
-				args = []string{"*"}
-				p.nextToken()
-			} else if p.cur.Type == IDENT {
-				col, parseErr := p.parseDottedIdentifier()
-				if parseErr != nil {
-					return nil, nil, nil, nil, nil, fmt.Errorf("inside %s(): %w", funcName, parseErr)
-				}
-				args = []string{col}
-			} else if p.cur.Type == NUMBER || p.cur.Type == STRING {
-				args = []string{p.cur.Literal}
-				p.nextToken()
-			} else if p.cur.Type == RPAREN {
-				// zero-arg function like ROW_NUMBER()
-			} else {
-				return nil, nil, nil, nil, nil, fmt.Errorf("expected column name or * inside %s()", funcName)
+			args, parseErr := p.parseFuncArgs()
+			if parseErr != nil {
+				return nil, nil, nil, nil, nil, fmt.Errorf("inside %s(): %w", funcName, parseErr)
 			}
 			if p.cur.Type != RPAREN {
 				return nil, nil, nil, nil, nil, fmt.Errorf("expected ) after argument in %s()", funcName)
@@ -1358,7 +1506,6 @@ func (p *Parser) parseSelectItems() ([]string, []Expression, []AggregateExpr, []
 				distinctPrefix = "DISTINCT "
 			}
 			colKey := funcName + "(" + distinctPrefix + argStr + ")"
-
 			if p.peekIs(OVER) {
 				// Window function: OVER (PARTITION BY ... ORDER BY ...)
 				p.nextToken() // consume )
@@ -1377,7 +1524,7 @@ func (p *Parser) parseSelectItems() ([]string, []Expression, []AggregateExpr, []
 					}
 				}
 			} else {
-				aggregates = append(aggregates, AggregateExpr{FuncName: funcName, Column: argStr, Distinct: distinct})
+				aggregates = append(aggregates, AggregateExpr{FuncName: funcName, Column: argStr, Args: args, Distinct: distinct})
 				columns = append(columns, colKey)
 				columnExprs = append(columnExprs, nil)
 				if p.peekIs(AS) {
@@ -1445,6 +1592,79 @@ func (p *Parser) parseSelectItems() ([]string, []Expression, []AggregateExpr, []
 	return columns, columnExprs, aggregates, windowExprs, colAliases, nil
 }
 
+func (p *Parser) parseFuncArgs() ([]string, error) {
+	var args []string
+	if p.cur.Type == ASTERISK {
+		args = []string{"*"}
+		p.nextToken()
+		return args, nil
+	}
+	if p.cur.Type == RPAREN {
+		return nil, nil
+	}
+	for {
+		if p.cur.Type == IDENT {
+			col, err := p.parseDottedIdentifier()
+			if err != nil {
+				return nil, err
+			}
+			args = append(args, col)
+		} else if p.cur.Type == NUMBER || p.cur.Type == STRING {
+			args = append(args, p.cur.Literal)
+			p.nextToken()
+		} else {
+			return nil, fmt.Errorf("expected argument in function call, got %s", tokenName(p.cur.Type))
+		}
+		if p.cur.Type != COMMA {
+			break
+		}
+		p.nextToken()
+	}
+	return args, nil
+}
+
+func (p *Parser) parseCastExpr() (*FuncCallExpr, error) {
+	if p.cur.Type != CAST_KW {
+		return nil, fmt.Errorf("expected CAST")
+	}
+	p.nextToken()
+	if p.cur.Type != LPAREN {
+		return nil, fmt.Errorf("expected ( after CAST")
+	}
+	p.nextToken()
+	// Parse inner expression as a column name or literal
+	var inner string
+	if p.cur.Type == IDENT {
+		col, err := p.parseDottedIdentifier()
+		if err != nil {
+			return nil, fmt.Errorf("inside CAST(): %w", err)
+		}
+		inner = col
+	} else if p.cur.Type == STRING || p.cur.Type == NUMBER {
+		inner = p.cur.Literal
+		p.nextToken()
+	} else {
+		return nil, fmt.Errorf("expected column name or literal inside CAST()")
+	}
+	if p.cur.Type != AS {
+		return nil, fmt.Errorf("expected AS after expression in CAST()")
+	}
+	p.nextToken()
+	if p.cur.Type != IDENT {
+		return nil, fmt.Errorf("expected type name after AS in CAST()")
+	}
+	typeName := strings.ToUpper(p.cur.Literal)
+	p.nextToken()
+	if p.cur.Type != RPAREN {
+		return nil, fmt.Errorf("expected ) after type in CAST()")
+	}
+	p.nextToken()
+	return &FuncCallExpr{
+		FuncName: "CAST",
+		Args:     []string{inner, typeName},
+	}, nil
+}
+
 func (p *Parser) parseWindowSpec(funcName string, args []string) (*WindowExpr, error) {
 	if p.cur.Type != LPAREN {
 		return nil, fmt.Errorf("expected ( after OVER")
@@ -1478,6 +1698,17 @@ func (p *Parser) parseWindowSpec(funcName string, args []string) (*WindowExpr, e
 		}
 	}
 
+	// Parse window frame clause: [ROWS | RANGE] BETWEEN ... AND ...
+	var frame *WindowFrame
+	if p.cur.Type == ROWS_KW || p.cur.Type == RANGE_KW {
+		frameType := FrameRows
+		if p.cur.Type == RANGE_KW {
+			frameType = FrameRange
+		}
+		p.nextToken()
+		frame, _ = p.parseWindowFrame(frameType)
+	}
+
 	if p.cur.Type != RPAREN {
 		return nil, fmt.Errorf("expected ) after window specification, got %s", tokenName(p.cur.Type))
 	}
@@ -1488,7 +1719,78 @@ func (p *Parser) parseWindowSpec(funcName string, args []string) (*WindowExpr, e
 		Args:        args,
 		PartitionBy: partitionBy,
 		OrderBy:     orderBy,
+		Frame:       frame,
 	}, nil
+}
+
+func (p *Parser) parseWindowFrame(frameType WindowFrameType) (*WindowFrame, error) {
+	var start, end WindowFrameBoundary
+	// Check for BETWEEN ... AND ... syntax
+	if p.cur.Type == BETWEEN_KW {
+		p.nextToken()
+		var err error
+		start, err = p.parseWindowFrameBound()
+		if err != nil {
+			return nil, err
+		}
+		if p.cur.Type != AND {
+			return nil, fmt.Errorf("expected AND after window frame start")
+		}
+		p.nextToken()
+		end, err = p.parseWindowFrameBound()
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		// Shorthand: ROWS n PRECEDING  =>  ROWS BETWEEN n PRECEDING AND CURRENT ROW
+		var err error
+		start, err = p.parseWindowFrameBound()
+		if err != nil {
+			return nil, err
+		}
+		end = WindowFrameBoundary{BoundType: FrameCurrentRow}
+	}
+	return &WindowFrame{FrameType: frameType, Start: start, End: end}, nil
+}
+
+func (p *Parser) parseWindowFrameBound() (WindowFrameBoundary, error) {
+	if p.cur.Type == UNBOUNDED_KW {
+		p.nextToken()
+		if p.cur.Type == PRECEDING_KW {
+			p.nextToken()
+			return WindowFrameBoundary{BoundType: FrameUnboundedPreceding}, nil
+		}
+		if p.cur.Type == FOLLOWING_KW {
+			p.nextToken()
+			return WindowFrameBoundary{BoundType: FrameUnboundedFollowing}, nil
+		}
+		return WindowFrameBoundary{}, fmt.Errorf("expected PRECEDING or FOLLOWING after UNBOUNDED")
+	}
+	if p.cur.Type == CURRENT_KW {
+		p.nextToken()
+		if p.cur.Type != IDENT || strings.ToUpper(p.cur.Literal) != "ROW" {
+			return WindowFrameBoundary{}, fmt.Errorf("expected ROW after CURRENT")
+		}
+		p.nextToken()
+		return WindowFrameBoundary{BoundType: FrameCurrentRow}, nil
+	}
+	if p.cur.Type == NUMBER {
+		n, err := strconv.Atoi(p.cur.Literal)
+		if err != nil {
+			return WindowFrameBoundary{}, fmt.Errorf("invalid number in window frame bound")
+		}
+		p.nextToken()
+		if p.cur.Type == PRECEDING_KW {
+			p.nextToken()
+			return WindowFrameBoundary{BoundType: FrameNPreceding, N: n}, nil
+		}
+		if p.cur.Type == FOLLOWING_KW {
+			p.nextToken()
+			return WindowFrameBoundary{BoundType: FrameNFollowing, N: n}, nil
+		}
+		return WindowFrameBoundary{}, fmt.Errorf("expected PRECEDING or FOLLOWING after number in window frame")
+	}
+	return WindowFrameBoundary{}, fmt.Errorf("expected UNBOUNDED, CURRENT ROW, or number in window frame bound, got %s", tokenName(p.cur.Type))
 }
 
 const (
@@ -1627,6 +1929,8 @@ func exprToString(expr Expression) string {
 		return v.Column + " " + v.Operator + " " + v.Value
 	case *LiteralExpr:
 		return v.Value
+	case *FuncCallExpr:
+		return v.FuncName + "(" + strings.Join(v.Args, ",") + ")"
 	default:
 		return ""
 	}

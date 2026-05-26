@@ -68,3 +68,146 @@
   - [ ] 列裁剪已实现
   - [ ] Join 重排序（基于代价）已实现
 - [ ] 考虑分布式执行或更大规模并行模型
+
+## 函数补齐计划（Hive SQL Built-in）
+
+### P0：基础设施 — 统一函数注册系统
+- [x] 新建 `pkg/plan/builtin.go`：函数注册表 + `FuncDef` 结构体定义
+- [x] 拆分 `computeAggregate()` switch-case 到 `pkg/plan/builtin_agg.go`
+- [x] 新建 `pkg/plan/builtin_math.go` — 数学函数注册
+- [x] 新建 `pkg/plan/builtin_string.go` — 字符串函数注册
+- [x] 新建 `pkg/plan/builtin_datetime.go` — 日期函数注册
+- [x] 新建 `pkg/plan/builtin_window.go` — 窗口函数注册
+- [x] `computeAggregate()` / `computePartitionWindow()` 改为从注册表查找
+- [x] 新建 `pkg/plan/builtin_conditional.go` — 条件函数注册
+- [x] 新建 `pkg/plan/builtin_test.go` — 函数注册单元测试
+
+### P1：条件 & 类型转换
+- [x] `IF(cond, true_val, false_val)` — 最常用三目运算
+- [x] `COALESCE(v1, v2, ...)` — 返回第一个非 NULL
+- [x] `NVL(val, default)` — Oracle 风格 COALESCE
+- [x] `NULLIF(a, b)` — 相等则返回 NULL
+- [x] `CAST(x AS type)` — 类型转换（parser + 执行，支持列引用和字面量）
+
+### P1：标量函数调用支持（SELECT / WHERE）
+- [x] 新增 `FuncCallExpr` AST 节点
+- [x] parser `parseComparison()` 支持标量函数调用
+- [x] engine 在 SELECT 中自动区分聚合 vs 标量函数
+- [x] `evaluateExpressionValue()` 支持 `FuncCallExpr` 求值
+- [x] `evaluateExpression()` 支持 `FuncCallExpr` 布尔求值
+- [ ] WHERE 中多参函数调用（如 `SUBSTRING(col,1,2)`）完整支持
+
+### P1：字符串函数
+- [x] `CONCAT(str1, str2, ...)` — 字符串拼接
+- [x] `CONCAT_WS(sep, str1, str2, ...)` — 带分隔符拼接
+- [x] `SUBSTRING(s, pos[, len])` / `SUBSTR` — 子串截取
+- [x] `UPPER(s)` / `UCASE` — 转大写
+- [x] `LOWER(s)` / `LCASE` — 转小写
+- [x] `TRIM(s)` — 去首尾空格
+- [x] `LTRIM(s)` — 去左侧空格
+- [x] `RTRIM(s)` — 去右侧空格
+- [x] `LENGTH(s)` — 字符串长度
+- [x] `REPLACE(s, from, to)` — 字符串替换
+- [x] `REVERSE(s)` — 字符串反转
+- [x] `LOCATE(sub, s[, pos])` / `INSTR` — 查找子串位置
+- [x] `LPAD(s, len, pad)` — 左填充
+- [x] `RPAD(s, len, pad)` — 右填充
+- [x] `SPLIT(s, regex)` — 字符串分割（需配合 EXPLODE）
+- [x] `INITCAP(s)` — 首字母大写
+- [x] `ASCII(c)` — 返回 ASCII 码
+
+### P1：数学函数
+- [x] `ROUND(x[, d])` — 四舍五入
+- [x] `FLOOR(x)` — 向下取整
+- [x] `CEIL(x)` / `CEILING` — 向上取整
+- [x] `ABS(x)` — 绝对值
+- [x] `SQRT(x)` — 平方根
+- [x] `EXP(x)` — e 的 x 次幂
+- [x] `LN(x)` — 自然对数
+- [x] `LOG10(x)` — 以 10 为底对数
+- [x] `LOG2(x)` — 以 2 为底对数
+- [x] `POWER(x, y)` / `POW` — 幂运算
+- [x] `MOD(x, y)` — 取模
+- [x] `SIGN(x)` — 返回符号
+- [x] `RAND([seed])` — 随机数
+- [x] `GREATEST(v1, v2, ...)` — 最大值
+- [x] `LEAST(v1, v2, ...)` — 最小值
+- [x] `WIDTH_BUCKET(x, min, max, num)` — 等宽分桶
+
+### P1：日期时间函数
+- [x] `CURRENT_DATE` — 当前日期
+- [x] `CURRENT_TIMESTAMP` — 当前时间戳
+- [x] `UNIX_TIMESTAMP([date])` — 时间戳转 unix epoch
+- [x] `FROM_UNIXTIME(unixtime[, fmt])` — unix epoch 转日期串
+- [x] `TO_DATE(ts)` — 提取日期部分
+- [x] `YEAR(date)` — 提取年份
+- [x] `MONTH(date)` — 提取月份
+- [x] `DAY(date)` / `DAYOFMONTH` — 提取日
+- [x] `HOUR(ts)` — 提取小时
+- [x] `MINUTE(ts)` — 提取分钟
+- [x] `SECOND(ts)` — 提取秒
+- [x] `WEEKOFYEAR(date)` — 年内第几周
+- [x] `DATEDIFF(end, start)` — 日期差（天）
+- [x] `DATE_ADD(date, n)` — 日期加法
+- [x] `DATE_SUB(date, n)` — 日期减法
+- [x] `DATE_FORMAT(date, fmt)` — 日期格式化
+- [x] `ADD_MONTHS(date, n)` — 月份加减
+- [x] `LAST_DAY(date)` — 月末最后一天
+- [x] `NEXT_DAY(date, day_of_week)` — 下个星期几
+- [x] `MONTHS_BETWEEN(end, start)` — 月份差
+- [x] `QUARTER(date)` — 提取季度
+- [x] `TRUNC(date[, fmt])` — 日期截断
+- [x] `FROM_UTC_TIMESTAMP(ts, tz)` — UTC 转本地
+- [x] `TO_UTC_TIMESTAMP(ts, tz)` — 本地转 UTC
+
+### P1：聚合函数（补充）
+- [x] `STDDEV(expr)` / `STDDEV_POP` — 总体标准差
+- [x] `STDDEV_SAMP` — 样本标准差
+- [x] `VARIANCE(expr)` / `VAR_POP` — 总体方差
+- [x] `VAR_SAMP` — 样本方差
+- [x] `CORR(expr1, expr2)` — 相关系数
+- [x] `COVAR_POP(expr1, expr2)` — 总体协方差
+- [x] `COVAR_SAMP(expr1, expr2)` — 样本协方差
+- [x] `PERCENTILE(col, p)` — 百分位数
+- [x] `PERCENTILE_APPROX(col, p[, B])` — 近似百分位数
+- [x] `COLLECT_LIST(col)` — 收集为列表
+- [x] `COLLECT_SET(col)` — 收集为集合（去重）
+- [x] `HISTOGRAM_NUMERIC(col, num)` — 数值直方图
+
+### P1：窗口函数（补充）
+- [x] `NTILE(n) OVER(...)` — 分桶编号
+- [x] `LEAD(col[, offset, default]) OVER(...)` — 下一行
+- [x] `LAG(col[, offset, default]) OVER(...)` — 上一行
+- [x] `FIRST_VALUE(col) OVER(...)` — 窗口首行
+- [x] `LAST_VALUE(col) OVER(...)` — 窗口末行
+- [x] `CUME_DIST() OVER(...)` — 累积分布
+- [x] `PERCENT_RANK() OVER(...)` — 百分比排名
+- [x] `NTH_VALUE(col, n) OVER(...)` — 窗口内第 n 行
+
+### P2：窗口帧支持
+- [x] parser 识别 `ROWS BETWEEN ... AND ...` 语法
+- [x] parser 识别 `RANGE BETWEEN ... AND ...` 语法
+- [x] `WindowExpr` 增加 `Frame` 字段（含 `FrameType`、`Start`、`End`）
+- [x] `computeWindowAggFrame()` 根据帧定义计算滑动窗口
+- [x] 支持帧边界：`UNBOUNDED PRECEDING`、`n PRECEDING`、`CURRENT ROW`、`n FOLLOWING`、`UNBOUNDED FOLLOWING`
+- [x] RANGE 帧基于 ORDER BY 值等值分组（当前支持数值类型 PRECEDING/FOLLOWING 阈值）
+
+### P3：表生成函数 + LATERAL VIEW
+- [x] `EXPLODE(arr)` — 数组展开为多行（逗号分隔字符串）
+- [x] `EXPLODE(map)` — Map 展开为多行 (k, v)（k/v 成对读取）
+- [x] `POSEXPLODE(arr)` — 带索引的展开
+- [x] `LATERAL VIEW EXPLODE(...) tbl AS col` — 语法解析
+- [x] `LATERAL VIEW OUTER EXPLODE(...)` — 空数组保留父行
+- [x] SelectQuery 增加 LateralView 列表字段
+- [x] engine/plan 展开 LATERAL VIEW 生成多行（`LateralViewExplodeNode`）
+
+### P4：函数全量补全
+- [x] 正则函数：`REGEXP_REPLACE`, `REGEXP_EXTRACT`, `REGEXP_LIKE`
+- [x] 编码函数：`BASE64`, `UNBASE64`, `HEX`, `UNHEX`
+- [x] 编码函数：`ENCODE`, `DECODE`
+- [x] HASH 函数：`MD5`, `SHA1`, `SHA2`, `CRC32`, `HASH`
+- [x] JSON 函数：`GET_JSON_OBJECT`
+- [x] JSON 函数：`JSON_TUPLE`
+- [x] 杂项：`CURRENT_USER`, `CURRENT_DATABASE`, `VERSION`
+- [x] 掩码函数：`MASK`, `MASK_FIRST_N`, `MASK_LAST_N`, `MASK_SHOW_FIRST_N`, `MASK_SHOW_LAST_N`
+- [x] `POSEXPLODE` — 带索引的数组展开（LATERAL VIEW 框架已支持）

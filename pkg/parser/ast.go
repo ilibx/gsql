@@ -77,9 +77,10 @@ type LogicalExpr struct {
 func (e *LogicalExpr) expressionNode() {}
 
 type AggregateExpr struct {
-	FuncName string // COUNT, SUM, AVG, MIN, MAX
-	Column   string // column name or "*"
-	Distinct bool   // true for COUNT(DISTINCT col)
+	FuncName string   // COUNT, SUM, AVG, MIN, MAX
+	Column   string   // column name or "*" (first arg, for backward compat)
+	Args     []string // all arguments (for multi-arg agg like CORR(x,y))
+	Distinct bool     // true for COUNT(DISTINCT col)
 }
 
 type CTE struct {
@@ -150,19 +151,65 @@ type LiteralExpr struct {
 
 func (e *LiteralExpr) expressionNode() {}
 
+// FuncCallExpr represents a scalar function call (e.g., UPPER(name), LENGTH(col))
+type FuncCallExpr struct {
+	FuncName string
+	Args     []string
+}
+
+func (e *FuncCallExpr) expressionNode() {}
+
 type SortOrder struct {
 	Column string
 	Desc   bool
 }
 
+type WindowFrameBound string
+
+const (
+	FrameUnboundedPreceding WindowFrameBound = "UNBOUNDED PRECEDING"
+	FrameNPreceding         WindowFrameBound = "PRECEDING"
+	FrameCurrentRow         WindowFrameBound = "CURRENT ROW"
+	FrameNFollowing         WindowFrameBound = "FOLLOWING"
+	FrameUnboundedFollowing WindowFrameBound = "UNBOUNDED FOLLOWING"
+)
+
+type WindowFrameType string
+
+const (
+	FrameRows  WindowFrameType = "ROWS"
+	FrameRange WindowFrameType = "RANGE"
+)
+
+type WindowFrameBoundary struct {
+	BoundType WindowFrameBound
+	N         int    // for n PRECEDING / n FOLLOWING; 0 for UNBOUNDED / CURRENT ROW
+}
+
+type WindowFrame struct {
+	FrameType WindowFrameType
+	Start     WindowFrameBoundary
+	End       WindowFrameBoundary
+	OrderBy   string // ORDER BY column used for RANGE frame (set at execution time)
+}
+
 type WindowExpr struct {
-	FuncName    string     // ROW_NUMBER, RANK, DENSE_RANK, SUM, AVG, MIN, MAX, COUNT
-	Args        []string   // function arguments (e.g., ["col"] for SUM(col))
-	PartitionBy []string   // PARTITION BY columns
-	OrderBy     []SortOrder // ORDER BY within window
+	FuncName    string        // ROW_NUMBER, RANK, DENSE_RANK, SUM, AVG, MIN, MAX, COUNT
+	Args        []string      // function arguments (e.g., ["col"] for SUM(col))
+	PartitionBy []string      // PARTITION BY columns
+	OrderBy     []SortOrder   // ORDER BY within window
+	Frame       *WindowFrame  // nil means default frame (RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW with ORDER BY)
 }
 
 func (e *WindowExpr) expressionNode() {}
+
+type LateralView struct {
+	IsOuter   bool
+	FuncName  string   // EXPLODE, POSEXPLODE
+	Args      []string
+	TableName string   // alias for the generated table
+	ColNames  []string // column aliases (e.g., ["val"] for EXPLODE(arr), ["pos","val"] for POSEXPLODE, ["key","val"] for EXPLODE(map))
+}
 
 type SelectQuery struct {
 	CTEs          []CTE
@@ -187,4 +234,5 @@ type SelectQuery struct {
 	ColumnAliases map[string]string
 	UnionQuery    *SelectQuery
 	UnionAll      bool
+	LateralViews  []LateralView
 }

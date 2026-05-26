@@ -226,6 +226,30 @@ func (e *Engine) executeSelectWithCTEs(query *parser.SelectQuery, cteTables map[
 	if err != nil {
 		return nil, err
 	}
+
+	// LATERAL VIEW EXPLODE
+	for _, lv := range query.LateralViews {
+		if (lv.FuncName == "EXPLODE" || lv.FuncName == "POSEXPLODE") && len(lv.Args) > 0 {
+			valAlias := lv.ColNames[0]
+			if lv.FuncName == "POSEXPLODE" && len(lv.ColNames) >= 2 {
+				// POSEXPLODE: first alias is pos, second is value
+				lvNode := plan.NewLateralViewExplodeNode(root, stripTableAlias(lv.Args[0]), lv.ColNames[1], lv.IsOuter)
+				lvNode.WithPos = true
+				lvNode.PosAlias = lv.ColNames[0]
+				root = lvNode
+			} else if lv.FuncName == "EXPLODE" && len(lv.ColNames) >= 2 {
+				// EXPLODE(map): first alias is key, second is value
+				lvNode := plan.NewLateralViewExplodeNode(root, stripTableAlias(lv.Args[0]), lv.ColNames[1], lv.IsOuter)
+				lvNode.WithMap = true
+				lvNode.PosAlias = lv.ColNames[0]
+				root = lvNode
+			} else {
+				// EXPLODE(arr): single value column
+				root = plan.NewLateralViewExplodeNode(root, stripTableAlias(lv.Args[0]), valAlias, lv.IsOuter)
+			}
+		}
+	}
+
 	rows, err := root.Execute()
 	if err != nil {
 		return nil, err
@@ -325,7 +349,16 @@ func (e *Engine) addFiltersAndGrouping(root plan.LogicalNode, sel *parser.Select
 		aggDefs := make([]plan.AggregateDef, 0, len(sel.Aggregates))
 		for _, agg := range sel.Aggregates {
 			if agg.FuncName != "" {
-				aggDefs = append(aggDefs, plan.AggregateDef{FuncName: agg.FuncName, Column: stripTableAlias(agg.Column), Distinct: agg.Distinct})
+				// Check if this is a scalar function (not a real aggregate)
+				if fn, ok := plan.LookupFunc(agg.FuncName); ok && fn.Type == plan.FuncScalar {
+					// scalar function: skip aggregate processing, will be handled in projection
+					continue
+				}
+				aggArgs := make([]string, len(agg.Args))
+				for j, a := range agg.Args {
+					aggArgs[j] = stripTableAlias(a)
+				}
+				aggDefs = append(aggDefs, plan.AggregateDef{FuncName: agg.FuncName, Column: stripTableAlias(agg.Column), Args: aggArgs, Distinct: agg.Distinct})
 			}
 		}
 		if len(groupBy) > 0 || len(aggDefs) > 0 {
@@ -344,6 +377,9 @@ func (e *Engine) addFiltersAndGrouping(root plan.LogicalNode, sel *parser.Select
 func hasRealAggregates(aggs []parser.AggregateExpr) bool {
 	for _, a := range aggs {
 		if a.FuncName != "" {
+			if fn, ok := plan.LookupFunc(a.FuncName); ok && fn.Type == plan.FuncScalar {
+				continue
+			}
 			return true
 		}
 	}
@@ -392,12 +428,14 @@ func (e *Engine) addWindowFunctions(root plan.LogicalNode, sel *parser.SelectQue
 		for j, o := range w.OrderBy {
 			ob[j] = parser.SortOrder{Column: stripTableAlias(o.Column), Desc: o.Desc}
 		}
-		windowExprs = append(windowExprs, parser.WindowExpr{
+		we := parser.WindowExpr{
 			FuncName:    w.FuncName,
 			Args:        args,
 			PartitionBy: partBy,
 			OrderBy:     ob,
-		})
+			Frame:       w.Frame,
+		}
+		windowExprs = append(windowExprs, we)
 	}
 	if len(windowExprs) > 0 {
 		return plan.NewLogicalWindow(root, windowExprs)
@@ -442,7 +480,12 @@ func (e *Engine) addProjection(root plan.LogicalNode, sel *parser.SelectQuery) p
 		if i < len(sel.ColumnExprs) {
 			columnExprs = append(columnExprs, sel.ColumnExprs[i])
 		} else {
-			columnExprs = append(columnExprs, nil)
+			// Check if this column looks like a scalar function call (e.g., "UPPER(name)")
+			if expr := e.makeFuncCallExpr(stripped, sel); expr != nil {
+				columnExprs = append(columnExprs, expr)
+			} else {
+				columnExprs = append(columnExprs, nil)
+			}
 		}
 	}
 
@@ -454,6 +497,36 @@ func (e *Engine) addProjection(root plan.LogicalNode, sel *parser.SelectQuery) p
 		root = plan.NewLogicalProject(root, columns, columnExprs)
 	}
 	return root
+}
+
+// makeFuncCallExpr checks if a column key looks like a function call (e.g. "UPPER(name)")
+// and returns a FuncCallExpr if a matching scalar function is registered.
+func (e *Engine) makeFuncCallExpr(col string, sel *parser.SelectQuery) parser.Expression {
+	idx := strings.Index(col, "(")
+	if idx <= 0 || !strings.HasSuffix(col, ")") {
+		return nil
+	}
+	funcName := strings.ToUpper(col[:idx])
+	fn, ok := plan.LookupFunc(funcName)
+	if !ok || fn.Type != plan.FuncScalar {
+		return nil
+	}
+	inner := col[idx+1 : len(col)-1]
+	var args []string
+	if strings.HasPrefix(inner, "DISTINCT ") {
+		inner = inner[9:]
+	}
+	if inner == "*" || inner == "" {
+		args = nil
+	} else if strings.Contains(inner, ",") {
+		parts := strings.Split(inner, ",")
+		for _, p := range parts {
+			args = append(args, strings.TrimSpace(p))
+		}
+	} else {
+		args = []string{inner}
+	}
+	return &parser.FuncCallExpr{FuncName: funcName, Args: args}
 }
 
 func (e *Engine) expandStarColumns(sel *parser.SelectQuery) []string {
