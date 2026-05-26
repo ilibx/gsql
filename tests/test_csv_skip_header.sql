@@ -10,7 +10,7 @@ WITH (
   location = 'samples/csv_opts',
   file_pattern = 'with_header.csv',
   delimiter = '|',
-  skip_header_lines = '2'
+  skip_lines = '2'
 );
 
 SELECT name, score FROM header_scores ORDER BY id;

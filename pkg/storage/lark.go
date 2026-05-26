@@ -798,7 +798,7 @@ func (s *larkStorage) MkdirAll(ctx context.Context, name string, perm fs.FileMod
 		return ctx.Err()
 	}
 	name = strings.TrimSuffix(strings.TrimPrefix(name, "/"), "/")
-	if name == "" {
+	if name == "" || name == "." {
 		return nil
 	}
 	rootToken, err := s.root(ctx)
@@ -827,6 +827,10 @@ func (s *larkStorage) Remove(ctx context.Context, name string) error {
 	if isDir {
 		fileType = "folder"
 	}
+	return s.RemoveByToken(ctx, token, fileType)
+}
+
+func (s *larkStorage) RemoveByToken(ctx context.Context, token, fileType string) error {
 	u := fmt.Sprintf(larkBaseURL+larkDeleteAPI+"?type=%s", token, fileType)
 	data, err := s.doDelete(ctx, u)
 	if err != nil {
@@ -856,6 +860,13 @@ func (s *larkStorage) WriteFile(ctx context.Context, name string, data []byte, p
 	parentToken, fileName, err := s.ensurePath(ctx, name)
 	if err != nil {
 		return err
+	}
+
+	// Delete existing file with the same name to avoid duplicates in Lark Drive
+	if token, isDir, derr := s.resolveChildToken(ctx, parentToken, fileName); derr == nil && !isDir {
+		if rerr := s.RemoveByToken(ctx, token, "file"); rerr != nil {
+			fmt.Fprintf(os.Stderr, "WARNING: remove existing file %s failed: %v\n", fileName, rerr)
+		}
 	}
 
 	var buf bytes.Buffer

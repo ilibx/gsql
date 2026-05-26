@@ -20,6 +20,7 @@ type CSVOptions struct {
 	SkipHeaderLines int  // lines to skip at file start (default: 0)
 	Quote           rune // quote character (default: '"')
 	Escape          rune // escape character (default: '"')
+	IncludeHeader   bool // write column names as first row
 }
 
 func NewCSVOptions(tbl *catalog.Table) CSVOptions {
@@ -31,7 +32,7 @@ func NewCSVOptions(tbl *catalog.Table) CSVOptions {
 	if d := tbl.Option("delimiter", ""); d != "" {
 		opts.Delimiter = []rune(d)[0]
 	}
-	if s := tbl.Option("skip_header_lines", ""); s != "" {
+	if s := tbl.Option("skip_lines", ""); s != "" {
 		if n, err := strconv.Atoi(s); err == nil {
 			opts.SkipHeaderLines = n
 		}
@@ -41,6 +42,9 @@ func NewCSVOptions(tbl *catalog.Table) CSVOptions {
 	}
 	if e := tbl.Option("escape_char", ""); e != "" {
 		opts.Escape = []rune(e)[0]
+	}
+	if h := tbl.Option("include_header", ""); h != "" {
+		opts.IncludeHeader = h == "true" || h == "1" || h == "yes"
 	}
 	return opts
 }
@@ -143,6 +147,16 @@ func encodeCSV(w io.Writer, rows []Row, columns []catalog.ColumnDef, opts CSVOpt
 	writer := csv.NewWriter(w)
 	writer.Comma = opts.Delimiter
 	defer writer.Flush()
+
+	if opts.IncludeHeader {
+		header := make([]string, len(columns))
+		for i, col := range columns {
+			header[i] = col.Name
+		}
+		if err := writer.Write(header); err != nil {
+			return err
+		}
+	}
 
 	for _, row := range rows {
 		record := make([]string, len(columns))

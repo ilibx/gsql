@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -368,18 +369,28 @@ func writeTable(store Storage, tbl *catalog.Table, rows []Row, appendMode bool) 
 		return err
 	}
 
-	outputPath := outputFile
 	if appendMode {
-		tmpName := tempFileName(filepath.Ext(outputFile))
-		f, err := store.Create(ctx, tmpName)
-		if err != nil {
-			return err
+		// Read existing file and merge with new rows
+		existing, err := store.Open(ctx, outputFile)
+		if err == nil {
+			existingRows, derr := serde.Decode(ctx, format, existing, tbl.Columns, csvOpts)
+			existing.Close()
+			if derr == nil {
+				rows = append(existingRows, rows...)
+			}
+		} else if !errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("append open existing file failed: %w", err)
 		}
-		f.Close()
-		outputPath = tmpName
+		// Write combined data directly to output file
+		var buf bytes.Buffer
+		if err := serde.Encode(ctx, format, rows, tbl.Columns, &buf, csvOpts); err != nil {
+			return fmt.Errorf("append encode failed: %w", err)
+		}
+		return store.WriteFile(ctx, outputFile, buf.Bytes(), 0o644)
 	}
 
-	// Use atomic write: write to temp file, then rename
+	// Atomic write: write to temp file, then rename
+	outputPath := outputFile
 	tmpPath := outputPath + ".tmp"
 	file, err := store.Create(ctx, tmpPath)
 	if err != nil {
@@ -398,15 +409,6 @@ func writeTable(store Storage, tbl *catalog.Table, rows []Row, appendMode bool) 
 	if err := store.Rename(ctx, tmpPath, outputPath); err != nil {
 		store.Remove(ctx, tmpPath)
 		return fmt.Errorf("failed to rename temp file: %w", err)
-	}
-	if appendMode {
-		// Remove the original file and rename the temp file to the original file
-		if err := store.Remove(ctx, outputFile); err != nil && !errors.Is(err, fs.ErrNotExist) {
-			return fmt.Errorf("failed to remove original file: %w", err)
-		}
-		if err := store.Rename(ctx, outputPath, outputFile); err != nil {
-			return fmt.Errorf("failed to rename temp file to original: %w", err)
-		}
 	}
 	return nil
 }
@@ -436,21 +438,32 @@ func writePartitionedTable(store Storage, outputFile, format string, tbl *catalo
 		if err := store.MkdirAll(ctx, key, 0o755); err != nil {
 			return err
 		}
-		var outPath string
+		partPath := store.Join(key, outputFile)
+
 		if appendMode {
-			tmpName := tempFileName(filepath.Ext(outputFile))
-			f, err := store.Create(ctx, store.Join(key, tmpName))
-			if err != nil {
+			// Read existing partition file and merge with new rows
+			existing, err := store.Open(ctx, partPath)
+			if err == nil {
+				existingRows, derr := serde.Decode(ctx, format, existing, tbl.Columns, csvOpts)
+				existing.Close()
+				if derr == nil {
+					partRows = append(existingRows, partRows...)
+				}
+			} else if !errors.Is(err, fs.ErrNotExist) {
+				return fmt.Errorf("append open existing file failed: %w", err)
+			}
+			var buf bytes.Buffer
+			if err := serde.Encode(ctx, format, partRows, tbl.Columns, &buf, csvOpts); err != nil {
+				return fmt.Errorf("append encode failed: %w", err)
+			}
+			if err := store.WriteFile(ctx, partPath, buf.Bytes(), 0o644); err != nil {
 				return err
 			}
-			f.Close()
-			outPath = store.Join(key, tmpName)
-		} else {
-			outPath = store.Join(key, outputFile)
+			continue
 		}
 
 		// Atomic write: write to temp, then rename
-		tmpPath := outPath + ".tmp"
+		tmpPath := partPath + ".tmp"
 		file, err := store.Create(ctx, tmpPath)
 		if err != nil {
 			return err
@@ -464,7 +477,7 @@ func writePartitionedTable(store Storage, outputFile, format string, tbl *catalo
 			store.Remove(ctx, tmpPath)
 			return err
 		}
-		if err := store.Rename(ctx, tmpPath, outPath); err != nil {
+		if err := store.Rename(ctx, tmpPath, partPath); err != nil {
 			store.Remove(ctx, tmpPath)
 			return fmt.Errorf("failed to rename temp file: %w", err)
 		}

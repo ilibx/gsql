@@ -4,11 +4,12 @@ CREATE TABLE lark_data (
 )
 WITH (
   storage = 'lark',
-  app_id = 'cli_aab9399e15',
-  app_secret = 'gmZTJNIbczgViZqt7LJ',
+  app_id = 'cli_aa99536cb9399e15',
+  app_secret = 'gmZTJxY4x9jFeuLrjINIbczgViZqt7LJ',
   folder = 'gsql-data',     
-  chat_id = 'oc_940331b4696076ab6811540',
+  chat_id = 'oc_94033dd71120221b4696076ab6811540',
   format = 'csv',
+  include_header = 'true',
   file_pattern = '*.csv'
 );
 

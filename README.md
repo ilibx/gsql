@@ -7,7 +7,8 @@ gsql 是一个基于 Go 的轻量级 Hive 风格 SQL 查询引擎原型。当前
 - `CREATE TABLE ... WITH (...)` 声明本地表结构与文件映射
 - `SELECT` 查询、`WITH` CTE、子查询（FROM 子句中的派生表）、`JOIN`（Hash Join 实现，支持表别名）、`WHERE`（支持 `AND`/`OR` 组合）、`GROUP BY`、`HAVING`、`ORDER BY`（支持列别名引用）、`LIMIT`
 - `GROUP BY` 与聚合函数：`COUNT`、`SUM`、`AVG`、`MIN`、`MAX`
-- `INSERT OVERWRITE TABLE` 将查询结果写回目标表
+- `INSERT OVERWRITE TABLE` 覆盖写入目标表
+- `INSERT INTO TABLE` 追加数据到已有 CSV 文件（自动读取合并）
 - 支持本地 `CSV` 与 `JSON` 数据源
 - 查询引擎自动将 SQL 转换为执行计划，并对过滤与投影阶段进行并行执行
 - 支持 `EXPLAIN` 命令查看逻辑计划、优化后逻辑计划和物理执行计划
@@ -52,10 +53,13 @@ gsql 拥有以下核心层次：
 - `HAVING` 子句（支持聚合结果过滤）
 - `ORDER BY`（支持多列排序）
 - `LIMIT`
-- `INSERT OVERWRITE TABLE ... SELECT ...`
+- `INSERT OVERWRITE TABLE ... SELECT ...` 覆盖写入目标表
+- `INSERT INTO TABLE ... SELECT ...` 追加数据到已有 CSV/JSON 文件
 - `PARTITIONED BY (col1, col2, ...)` 分区表定义，写入时自动按分区列值写入子目录
 - 分区表读取时自动从目录路径注入分区列值，支持等值和范围（`>`, `<`, `>=`, `<=`）分区裁剪，自动识别 `col=value` 和裸值两种目录格式
 - 本地 `CSV` / `JSON` 数据读取与写入
+- CSV 选项：`delimiter`（分隔符）、`skip_lines`（读取时跳过行首 N 行）、`include_header`（写入时输出表头）、`quote_char`、`escape_char`
+- `INSERT INTO` 追加数据时自动合并已有文件内容
 - **云存储与远程数据源支持**：
   - `S3` / S3兼容服务（MinIO、阿里OSS等）
   - `FTP` / `SFTP` 文件服务器
@@ -216,10 +220,48 @@ WITH (
   file_name = 'result.csv'
 );
 
+-- 覆盖写入
 INSERT OVERWRITE TABLE result_users
 SELECT id, name
 FROM users
 WHERE name != 'alice';
+
+-- 追加数据（读取已有文件，合并后再写入，不会产生 .tmp 中间文件）
+INSERT INTO TABLE result_users
+SELECT id, name
+FROM users
+WHERE name = 'alice';
+```
+
+### CSV 格式选项
+
+```sql
+CREATE TABLE csv_opts (
+  id INT,
+  name STRING
+)
+WITH (
+  storage = 'local',
+  format = 'csv',
+  location = '/tmp/csv_opts',
+  file_name = 'data.csv',
+  delimiter = '|',          -- 字段分隔符（默认 ','）
+  skip_lines = '1',         -- 读取时跳过文件首行（如表头），默认 0
+  include_header = 'true',  -- 写入时输出列名作为首行，默认 false
+  quote_char = '"',         -- 引号字符（默认 '"'）
+  escape_char = '"'         -- 转义字符（默认 '"'）
+);
+
+INSERT OVERWRITE TABLE csv_opts
+SELECT 1 AS id, 'Alice' AS name;
+-- 输出: id|name
+--       1|Alice
+
+INSERT INTO TABLE csv_opts
+SELECT 2 AS id, 'Bob' AS name;
+-- 追加后: id|name
+--         1|Alice
+--         2|Bob
 ```
 
 ### S3 / S3兼容服务
@@ -355,21 +397,20 @@ WITH (
   storage = 'lark',
   app_id = 'cli_xxxxxxxxxxxx',
   app_secret = 'xxxxxxxxxxxxxxxxxxxxxxxxxxxx',
-  folder = 'gsql-data',          -- 根文件夹名称（推荐，自动创建/查找）
-  parent_token = 'xxxxxxxxxx',        -- folder 所在的父文件夹 token（必填）
+  folder = 'gsql-data',          -- 根文件夹名称（推荐，自动在网盘根目录创建/查找）
   chat_id = 'oc_xxxxxxxxxxxxx',       -- 可选，自动分享到群聊并授予管理权限
   format = 'csv',
   file_pattern = '*.csv'
 );
 ```
 
-**权限说明**：当 `chat_id` 配置时，机器人自动创建的新目录会自动授予该群聊 `full_access`（完全管理权限），确保群聊中的用户可以管理目录中的文件。
+**权限说明**：当 `chat_id` 配置时，机器人自动创建的新目录和写入的文件会自动授予该群聊 `full_access`（完全管理权限），确保群聊中的用户可以管理文件。
 
-**传统方式（直接使用文件夹 token）**：
+**直接使用文件夹 token**：
 ```sql
 WITH (
   ...
-  root_token = 'xxxxxxxxxx',          -- 直接指定文件夹 token（folder + parent_token 的二选一方案）
+  root_token = 'xxxxxxxxxx',          -- 直接指定文件夹 token（与 folder 二选一）
   chat_id = 'oc_xxxxxxxxxxxxx',
 )
 ```
@@ -378,7 +419,7 @@ WITH (
 SELECT * FROM lark_data LIMIT 10;
 
 -- INSERT 结果会自动写入 Lark 网盘，
--- 如果配置了 chat_id 还会自动分享到群中
+-- 如果配置了 chat_id 还会自动授予文件权限
 INSERT OVERWRITE TABLE lark_data
 SELECT id, name FROM users WHERE id > 100;
 ```
@@ -389,14 +430,11 @@ Lark 配置参数：
 |------|------|
 | `app_id` / `lark_app_id` | 飞书应用的 App ID |
 | `app_secret` / `lark_app_secret` | 飞书应用的 App Secret |
-| `folder` / `lark_folder` | 根文件夹名称（推荐）。配合 `parent_token` 使用，自动查找或创建 |
-| `parent_token` / `lark_parent_token` | `folder` 所在的父文件夹 token（使用 `folder` 时必填） |
-| `root_token` / `lark_root_token` | 根文件夹 token（二选一，与 `folder` + `parent_token` 任选其一） |
-| `chat_id` / `lark_chat_id` | 群聊 ID（可选）。配置后：1) 写入文件时自动分享到群 2) 新创建的目录自动授予该群完全管理权限 |
+| `folder` / `lark_folder` | 根文件夹名称（推荐）。自动在网盘根目录创建或查找，无需指定 `parent_token` |
+| `root_token` / `lark_root_token` | 根文件夹 token（与 `folder` 二选一）。设为空字符串 `''` 表示使用应用根目录 |
+| `chat_id` / `lark_chat_id` | 群聊 ID（可选）。配置后：1) 写入文件时自动授予群聊完全权限 2) 新创建的目录自动授予该群聊完全管理权限 |
 
-**自动授权**：当 `chat_id` 配置后，机器人每次通过 `ensureFolder` 创建新目录时，会自动调用 Lark Drive 权限 API 将该群聊添加为 `full_access` 成员，确保群聊可管理目录及其中文件。
-
-**分享到群聊**：如果配置了 `chat_id`，每次通过 `INSERT OVERWRITE` 写入文件后，文件会自动发送到指定群聊。也可通过 `lark://` URL 方式配置：
+**自动授权**：当 `chat_id` 配置后，机器人每次创建新目录或写入文件时，会自动调用 Lark Drive 权限 API 将该群聊添加为 `full_access` 成员，确保群聊可管理目录及其中文件。也可通过 `lark://` URL 方式配置：
 
 ```sql
 CREATE TABLE lark_data (

@@ -89,19 +89,17 @@ func TestWriteAppendNonPartitioned(t *testing.T) {
 		t.Fatalf("second append failed: %v", err)
 	}
 
-	// Should have 2 separate files (both start with append_)
-	entries, err := os.ReadDir(dir)
+	// Should have 1 merged file with both rows
+	data, err := os.ReadFile(filepath.Join(dir, "result.csv"))
 	if err != nil {
-		t.Fatalf("read dir failed: %v", err)
+		t.Fatalf("read result.csv failed: %v", err)
 	}
-	appendFiles := 0
-	for _, e := range entries {
-		if strings.HasPrefix(e.Name(), "append_") {
-			appendFiles++
-		}
+	content := string(data)
+	if !strings.Contains(content, "1") || !strings.Contains(content, "alice") {
+		t.Errorf("missing row1 in output: %s", content)
 	}
-	if appendFiles != 2 {
-		t.Errorf("expected 2 append files, got %d", appendFiles)
+	if !strings.Contains(content, "2") || !strings.Contains(content, "bob") {
+		t.Errorf("missing row2 in output: %s", content)
 	}
 }
 
@@ -133,19 +131,18 @@ func TestWriteAppendPartitioned(t *testing.T) {
 		t.Fatalf("second append failed: %v", err)
 	}
 
+	// Should have 1 merged file with both rows
 	partDir := filepath.Join(dir, "dt=2024-01-01")
-	entries, err := os.ReadDir(partDir)
+	data, err := os.ReadFile(filepath.Join(partDir, "data.csv"))
 	if err != nil {
-		t.Fatalf("read partition dir failed: %v", err)
+		t.Fatalf("read data.csv failed: %v", err)
 	}
-	appendFiles := 0
-	for _, e := range entries {
-		if strings.HasPrefix(e.Name(), "append_") {
-			appendFiles++
-		}
+	content := string(data)
+	if !strings.Contains(content, "1") || !strings.Contains(content, "a") {
+		t.Errorf("missing row1 in output: %s", content)
 	}
-	if appendFiles != 2 {
-		t.Errorf("expected 2 append files in partition, got %d", appendFiles)
+	if !strings.Contains(content, "2") || !strings.Contains(content, "b") {
+		t.Errorf("missing row2 in output: %s", content)
 	}
 }
 
