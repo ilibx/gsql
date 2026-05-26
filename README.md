@@ -355,14 +355,24 @@ WITH (
   storage = 'lark',
   app_id = 'cli_xxxxxxxxxxxx',
   app_secret = 'xxxxxxxxxxxxxxxxxxxxxxxxxxxx',
-  folder_name = 'gsql-data',          -- 根文件夹名称（推荐，自动创建/查找）
-  chat_id = 'oc_xxxxxxxxxxxxx',       -- 可选，分享到的群聊 ID
+  folder = 'gsql-data',          -- 根文件夹名称（推荐，自动创建/查找）
+  parent_token = 'xxxxxxxxxx',        -- folder 所在的父文件夹 token（必填）
+  chat_id = 'oc_xxxxxxxxxxxxx',       -- 可选，自动分享到群聊并授予管理权限
   format = 'csv',
   file_pattern = '*.csv'
 );
+```
 
--- 也可直接使用文件夹 token（向后兼容）：
--- root_token = 'xxxxxxxxxx',
+**权限说明**：当 `chat_id` 配置时，机器人自动创建的新目录会自动授予该群聊 `full_access`（完全管理权限），确保群聊中的用户可以管理目录中的文件。
+
+**传统方式（直接使用文件夹 token）**：
+```sql
+WITH (
+  ...
+  root_token = 'xxxxxxxxxx',          -- 直接指定文件夹 token（folder + parent_token 的二选一方案）
+  chat_id = 'oc_xxxxxxxxxxxxx',
+)
+```
 
 -- 查询 Lark 网盘中的文件
 SELECT * FROM lark_data LIMIT 10;
@@ -379,9 +389,12 @@ Lark 配置参数：
 |------|------|
 | `app_id` / `lark_app_id` | 飞书应用的 App ID |
 | `app_secret` / `lark_app_secret` | 飞书应用的 App Secret |
-| `folder_name` / `lark_folder_name` | 根文件夹名称（推荐）。首次使用自动创建，后续复用已有文件夹 |
-| `root_token` / `lark_root_token` | 根文件夹 token（二选一，与 `folder_name` 任选其一） |
-| `chat_id` / `lark_chat_id` | 群聊 ID（可选），配置后写入文件时自动分享到群 |
+| `folder` / `lark_folder` | 根文件夹名称（推荐）。配合 `parent_token` 使用，自动查找或创建 |
+| `parent_token` / `lark_parent_token` | `folder` 所在的父文件夹 token（使用 `folder` 时必填） |
+| `root_token` / `lark_root_token` | 根文件夹 token（二选一，与 `folder` + `parent_token` 任选其一） |
+| `chat_id` / `lark_chat_id` | 群聊 ID（可选）。配置后：1) 写入文件时自动分享到群 2) 新创建的目录自动授予该群完全管理权限 |
+
+**自动授权**：当 `chat_id` 配置后，机器人每次通过 `ensureFolder` 创建新目录时，会自动调用 Lark Drive 权限 API 将该群聊添加为 `full_access` 成员，确保群聊可管理目录及其中文件。
 
 **分享到群聊**：如果配置了 `chat_id`，每次通过 `INSERT OVERWRITE` 写入文件后，文件会自动发送到指定群聊。也可通过 `lark://` URL 方式配置：
 
@@ -397,6 +410,11 @@ WITH (
 ```
 
 URL 中 host 部分为文件夹名称，查询参数支持 `app_id`, `app_secret`, `chat_id`。
+
+**获取文件夹 token**：
+- 在飞书云文档中打开目标文件夹
+- 查看浏览器地址栏 URL：`https://drive.feishu.cn/drive/folder/{token}`
+- `{token}` 部分即为文件夹 token（如 `fldxxxxxxxxxx`）
 
 ### 无 FROM 查询
 
@@ -520,7 +538,7 @@ gsql 支持多种存储后端，提供两种配置方式：
 | `sftp` | SFTP 服务器 | `host`, `port`(默认22), `username`, `password`, `path` |
 | `webdav` | WebDAV 服务 | `url`(必填), `username`, `password`, `path` |
 | `git-lfs` / `gitlfs` | Git LFS 版本控制 | `git_lfs_repo` 或 `git_lfs_path` |
-| `lark` | 飞书 Lark 云文档 | `app_id`, `app_secret`, `folder_name`（名称或 `root_token` 二选一）, `chat_id`(可选) |
+| `lark` | 飞书 Lark 云文档 | `app_id`, `app_secret`, `folder`（名称或 `root_token` 二选一）, `chat_id`(可选) |
 
 ### 2. URL 方式（推荐）
 
@@ -548,7 +566,7 @@ WITH (
 | `hdfs://`  | `hdfs://namenode:8020/data`                                              | HDFS 文件系统，支持指定 namenode 和端口                                                 |
 | `webdav://`| `webdav://user:pass@webdav.example.com/data`                             | WebDAV 服务，支持用户名密码                                                             |
 | `git://`   | `git:///path/to/repo` 或 `git://user:pass@git.example.com/repo.git`      | Git 仓库（支持 Git LFS），可以是本地路径或远程仓库 URL
-| `lark://`  | `lark://folder_name/path?app_id=xxx&app_secret=xxx&chat_id=xxx`           | 飞书 Lark 云文档。host 为文件夹名称（自动创建/查找），路径为文件路径。支持 `lark://root_token/path` 格式（向后兼容） |
+| `lark://`  | `lark://folder/path?app_id=xxx&app_secret=xxx&chat_id=xxx`           | 飞书 Lark 云文档。host 为文件夹名称（自动创建/查找），路径为文件路径。支持 `lark://root_token/path` 格式（向后兼容） |
 
 ### 参数优先级
 

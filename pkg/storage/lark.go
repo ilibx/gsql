@@ -10,9 +10,11 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/url"
+	"os"
 	"path"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -30,7 +32,9 @@ const (
 	larkDeleteAPI  = "/open-apis/drive/v1/files/%s"
 	larkMoveAPI    = "/open-apis/drive/v1/files/%s/move"
 	larkUpdateAPI  = "/open-apis/drive/v1/files/%s"
-	larkSendMsgAPI = "/open-apis/im/v1/messages?receive_id_type=chat_id"
+	larkMetaAPI    = "/open-apis/drive/v1/metas/batch_query"
+	larkRootFolderMetaAPI = "/open-apis/drive/explorer/v2/root_folder/meta"
+
 
 	larkAuthTTL     = 90 * time.Minute
 	larkHTTPTimeout = 30 * time.Second
@@ -39,7 +43,7 @@ const (
 type larkStorage struct {
 	appID     string
 	appSecret string
-	folderName string
+	folder string
 	chatID    string
 
 	mu        sync.Mutex
@@ -49,6 +53,9 @@ type larkStorage struct {
 	rootOnce  sync.Once
 	rootErr   error
 	httpCli   *http.Client
+
+	writeBufs   map[string][]byte
+	writeBufsMu sync.Mutex
 }
 
 func newLarkStorage(tbl *catalog.Table) (Storage, error) {
@@ -65,9 +72,12 @@ func newLarkStorage(tbl *catalog.Table) (Storage, error) {
 	}
 
 	// Support both folder name and direct token for root
-	folderName := tbl.Option("folder_name", "")
-	if folderName == "" {
-		folderName = tbl.Option("lark_folder_name", "")
+	folder := tbl.Option("folder", "")
+	if folder == "" {
+		folder = tbl.Option("folder_name", "")
+	}
+	if folder == "" {
+		folder = tbl.Option("lark_folder_name", "")
 	}
 	rootToken := tbl.Option("root_token", "")
 	if rootToken == "" {
@@ -75,12 +85,17 @@ func newLarkStorage(tbl *catalog.Table) (Storage, error) {
 		rawURL := tbl.Option("url", "")
 		if rootToken == "" && rawURL != "" {
 			if u, err := url.Parse(rawURL); err == nil && u.Scheme == "lark" {
-				folderName = u.Host
+				folder = u.Host
 			}
 		}
 	}
-	if rootToken == "" && folderName == "" {
-		return nil, fmt.Errorf("missing root: configure folder_name or root_token for Lark table %s", tbl.Name)
+	if rootToken == "" && folder == "" {
+		// If root_token is explicitly set to empty, allow resolving to root
+		if _, hasRootToken := tbl.WithOptions["root_token"]; !hasRootToken {
+			if _, hasLarkRootToken := tbl.WithOptions["lark_root_token"]; !hasLarkRootToken {
+				return nil, fmt.Errorf("missing root: configure folder or root_token for Lark table %s", tbl.Name)
+			}
+		}
 	}
 
 	chatID := tbl.Option("chat_id", "")
@@ -91,32 +106,38 @@ func newLarkStorage(tbl *catalog.Table) (Storage, error) {
 	return &larkStorage{
 		appID:      appID,
 		appSecret:  appSecret,
-		folderName: folderName,
+		folder:     folder,
 		rootToken:  rootToken,
 		chatID:     chatID,
 		httpCli:    &http.Client{Timeout: larkHTTPTimeout},
+		writeBufs:  make(map[string][]byte),
 	}, nil
 }
 
-// resolveRoot lazily resolves the root token from folderName or returns rootToken directly.
+// resolveRoot lazily resolves the root token from folder or returns rootToken directly.
 func (s *larkStorage) resolveRoot(ctx context.Context) (string, error) {
 	s.rootOnce.Do(func() {
 		if s.rootToken != "" {
 			return // Already have a direct token
 		}
-		if s.folderName == "" {
-			s.rootErr = fmt.Errorf("missing root: configure folder_name or root_token")
-			return
-		}
-		// Look up or create the folder under the app's drive root
+		// Resolve the app root (also needed when root_token is explicitly "")
 		appRoot, err := s.getAppRoot(ctx)
 		if err != nil {
+			if s.folder == "" {
+				s.rootErr = fmt.Errorf("missing root: configure folder or root_token")
+				return
+			}
 			s.rootErr = fmt.Errorf("get app root failed: %w", err)
 			return
 		}
-		token, err := s.ensureFolder(ctx, appRoot, s.folderName)
+		if s.folder == "" {
+			s.rootToken = appRoot
+			return
+		}
+		// Look up or create the folder under the app's drive root
+		token, err := s.ensureFolder(ctx, appRoot, s.folder)
 		if err != nil {
-			s.rootErr = fmt.Errorf("resolve folder %q failed: %w", s.folderName, err)
+			s.rootErr = fmt.Errorf("resolve folder %q failed: %w", s.folder, err)
 			return
 		}
 		s.rootToken = token
@@ -126,38 +147,87 @@ func (s *larkStorage) resolveRoot(ctx context.Context) (string, error) {
 
 // getAppRoot finds the app's drive root folder token.
 func (s *larkStorage) getAppRoot(ctx context.Context) (string, error) {
-	// Try the root_folder API endpoint
-	data, err := s.doGet(ctx, larkBaseURL+"/open-apis/drive/v1/root_folder")
-	if err == nil {
-		var resp struct {
-			Code int `json:"code"`
-			Data struct {
-				Token string `json:"token"`
-			} `json:"data"`
-		}
-		if json.Unmarshal(data, &resp) == nil && resp.Code == 0 && resp.Data.Token != "" {
-			return resp.Data.Token, nil
+	// Try all known approaches to find the root folder token.
+	token, err := s.getRootViaMetaAPI(ctx)
+	if err == nil && token != "" {
+		return token, nil
+	}
+	token, err = s.getRootViaListAPI(ctx)
+	if err == nil && token != "" {
+		return token, nil
+	}
+	return "", fmt.Errorf("cannot determine app root folder; use root_token directly or ensure folder exists under the app's drive space")
+}
+
+func (s *larkStorage) getRootViaMetaAPI(ctx context.Context) (string, error) {
+	data, err := s.doGet(ctx, larkBaseURL+larkRootFolderMetaAPI)
+	if err != nil {
+		return "", err
+	}
+	var resp struct {
+		Code int `json:"code"`
+		Data struct {
+			Token string `json:"token"`
+		} `json:"data"`
+	}
+	if json.Unmarshal(data, &resp) != nil || resp.Code != 0 || resp.Data.Token == "" {
+		return "", fmt.Errorf("root_folder/meta: code=%d", resp.Code)
+	}
+	return resp.Data.Token, nil
+}
+
+func (s *larkStorage) getRootViaListAPI(ctx context.Context) (string, error) {
+	data, err := s.doGet(ctx, larkBaseURL+larkDriveAPI+"?page_size=10")
+	if err != nil {
+		return "", err
+	}
+	var resp struct {
+		Code int `json:"code"`
+		Data struct {
+			Files []struct {
+				Token       string `json:"token"`
+				ParentToken string `json:"parent_token"`
+			} `json:"files"`
+		} `json:"data"`
+	}
+	if json.Unmarshal(data, &resp) != nil || resp.Code != 0 {
+		return "", fmt.Errorf("list files: code=%d", resp.Code)
+	}
+	// parent_token directly from the listing
+	for _, f := range resp.Data.Files {
+		if f.ParentToken != "" {
+			return f.ParentToken, nil
 		}
 	}
-
-	// Fallback: list top-level files with empty parent to find root
-	data, err = s.doGet(ctx, larkBaseURL+larkDriveAPI+"?page_size=1")
-	if err == nil {
-		var resp struct {
-			Code int `json:"code"`
-			Data struct {
-				Entries []struct {
-					Token string `json:"token"`
-				} `json:"files"`
-			} `json:"data"`
-		}
-		if json.Unmarshal(data, &resp) == nil && resp.Code == 0 && len(resp.Data.Entries) > 0 {
-			// If we can list files at root level, the parent of these files is the root
-			return "", fmt.Errorf("cannot determine app root folder; set folder_name to a known folder or use root_token directly")
+	// Fallback: query metadata of the first file via batch_query
+	if len(resp.Data.Files) > 0 {
+		body, _ := json.Marshal(map[string]interface{}{
+			"request_docs": []map[string]string{
+				{"doc_token": resp.Data.Files[0].Token, "doc_type": "file"},
+			},
+			"with_url":        false,
+			"with_properties": true,
+		})
+		data, err := s.doPost(ctx, larkBaseURL+larkMetaAPI, "application/json", bytes.NewReader(body))
+		if err == nil {
+			var metaResp struct {
+				Code int `json:"code"`
+				Data struct {
+					Metas []struct {
+						Properties struct {
+							ParentToken string `json:"parent_token"`
+						} `json:"properties"`
+					} `json:"metas"`
+				} `json:"data"`
+			}
+			if json.Unmarshal(data, &metaResp) == nil && metaResp.Code == 0 && len(metaResp.Data.Metas) > 0 {
+				if pt := metaResp.Data.Metas[0].Properties.ParentToken; pt != "" {
+					return pt, nil
+				}
+			}
 		}
 	}
-
-	return "", fmt.Errorf("cannot determine app root folder; use root_token directly or ensure folder_name exists under the app's drive space")
+	return "", fmt.Errorf("no root token found from file listing")
 }
 
 func (s *larkStorage) getToken(ctx context.Context) (string, error) {
@@ -315,16 +385,16 @@ type larkListResp struct {
 	} `json:"data"`
 }
 
-type larkMetaResp struct {
+type larkMetaBatchResp struct {
 	Code int `json:"code"`
 	Msg  string `json:"msg"`
 	Data struct {
-		Token string `json:"token"`
-		Name  string `json:"name"`
-		Type  string `json:"type"`
-		Size  int    `json:"size"`
-		URL   string `json:"url"`
-		ParentToken string `json:"parent_token"`
+		Metas []struct {
+			DocToken string `json:"doc_token"`
+			DocType  string `json:"doc_type"`
+			Title    string `json:"title"`
+			URL      string `json:"url"`
+		} `json:"metas"`
 	} `json:"data"`
 }
 
@@ -332,7 +402,7 @@ type larkCreateFolderResp struct {
 	Code int `json:"code"`
 	Msg  string `json:"msg"`
 	Data struct {
-		NodeToken string `json:"node_token"`
+		NodeToken string `json:"token"`
 		URL       string `json:"url"`
 	} `json:"data"`
 }
@@ -351,7 +421,7 @@ func (s *larkStorage) listDir(ctx context.Context, parentToken string) ([]larkFi
 	var all []larkFileEntry
 	pageToken := ""
 	for {
-		u := fmt.Sprintf("%s%s?parent_node_token=%s&page_size=100", larkBaseURL, larkDriveAPI, parentToken)
+		u := fmt.Sprintf("%s%s?folder_token=%s&page_size=100", larkBaseURL, larkDriveAPI, parentToken)
 		if pageToken != "" {
 			u += "&page_token=" + pageToken
 		}
@@ -389,25 +459,32 @@ func (s *larkStorage) resolveChildToken(ctx context.Context, parentToken, childN
 }
 
 func (s *larkStorage) getFileMeta(ctx context.Context, token string) (*larkFileEntry, error) {
-	u := fmt.Sprintf("%s%s/%s", larkBaseURL, larkDriveAPI, token)
-	data, err := s.doGet(ctx, u)
+	body, _ := json.Marshal(map[string]interface{}{
+		"request_docs": []map[string]string{
+			{"doc_token": token, "doc_type": "file"},
+		},
+		"with_url": true,
+	})
+	data, err := s.doPost(ctx, larkBaseURL+larkMetaAPI, "application/json", bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
-	var resp larkMetaResp
+	var resp larkMetaBatchResp
 	if err := json.Unmarshal(data, &resp); err != nil {
 		return nil, fmt.Errorf("lark meta decode failed: %w", err)
 	}
 	if resp.Code != 0 {
 		return nil, fmt.Errorf("lark meta error code %d: %s", resp.Code, resp.Msg)
 	}
+	if len(resp.Data.Metas) == 0 {
+		return nil, fmt.Errorf("lark meta: no metadata found for token %s", token)
+	}
+	m := resp.Data.Metas[0]
 	return &larkFileEntry{
-		Token: resp.Data.Token,
-		Name:  resp.Data.Name,
-		Type:  resp.Data.Type,
-		Size:  resp.Data.Size,
-		URL:   resp.Data.URL,
-		ParentToken: resp.Data.ParentToken,
+		Token: m.DocToken,
+		Name:  m.Title,
+		Type:  m.DocType,
+		URL:   m.URL,
 	}, nil
 }
 
@@ -454,17 +531,60 @@ func (s *larkStorage) resolvePath(ctx context.Context, name string) (token strin
 	return currentToken, true, nil
 }
 
+// grantFullAccess grants full_access permission to the configured chat.
+// tokenType must be "file" or "folder" to match the entity type.
+func (s *larkStorage) grantFullAccess(ctx context.Context, token, tokenType string) error {
+	if s.chatID == "" {
+		return nil
+	}
+
+	body, _ := json.Marshal(map[string]string{
+		"member_type": "openchat",
+		"member_id":   s.chatID,
+		"perm":        "full_access",
+	})
+	u := fmt.Sprintf("%s/open-apis/drive/v1/permissions/%s/members?type=%s", larkBaseURL, token, tokenType)
+	data, err := s.doPost(ctx, u, "application/json", bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("grant access request failed: %w", err)
+	}
+
+	// Handle non-JSON error responses (e.g., permission denied)
+	trimmed := strings.TrimSpace(string(data))
+	if !strings.HasPrefix(trimmed, "{") {
+		// Not JSON - likely an error message
+		return fmt.Errorf("grant access failed: %s", trimmed)
+	}
+
+	var resp struct {
+		Code int    `json:"code"`
+		Msg  string `json:"msg"`
+	}
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return fmt.Errorf("grant access decode failed: %w", err)
+	}
+	if resp.Code != 0 {
+		return fmt.Errorf("grant access error code %d: %s", resp.Code, resp.Msg)
+	}
+	return nil
+}
+
 func (s *larkStorage) ensureFolder(ctx context.Context, parentToken, name string) (string, error) {
 	t, isDir, err := s.resolveChildToken(ctx, parentToken, name)
 	if err != nil {
 		return "", err
 	}
 	if t != "" && isDir {
+		if s.chatID != "" {
+			if perr := s.grantFullAccess(ctx, t, "folder"); perr != nil {
+				fmt.Fprintf(os.Stderr, "WARNING: grant folder access to chat failed: %v\n", perr)
+			}
+		}
 		return t, nil
 	}
 	body, _ := json.Marshal(map[string]string{
-		"name":             name,
-		"parent_node_token": parentToken,
+		"name":         name,
+		"folder_token": parentToken,
 	})
 	data, err := s.doPost(ctx, larkBaseURL+larkCreateFolderAPI, "application/json", bytes.NewReader(body))
 	if err != nil {
@@ -477,6 +597,13 @@ func (s *larkStorage) ensureFolder(ctx context.Context, parentToken, name string
 	if resp.Code != 0 {
 		return "", fmt.Errorf("lark create folder error code %d: %s", resp.Code, resp.Msg)
 	}
+	// Grant full access to the configured chat (best effort - continue if it fails)
+	if s.chatID != "" {
+		if perr := s.grantFullAccess(ctx, resp.Data.NodeToken, "folder"); perr != nil {
+			fmt.Fprintf(os.Stderr, "WARNING: grant folder access to chat failed: %v\n", perr)
+		}
+	}
+
 	return resp.Data.NodeToken, nil
 }
 
@@ -530,15 +657,12 @@ func (s *larkStorage) Open(ctx context.Context, name string) (File, error) {
 	if err := json.Unmarshal(data, &resp); err == nil && resp.Code != 0 {
 		return nil, fmt.Errorf("lark download error code %d: %s", resp.Code, resp.Msg)
 	}
-	meta, err := s.getFileMeta(ctx, token)
-	if err != nil {
-		return nil, err
-	}
+
 	return &larkReadFile{
 		baseFile: baseFile{},
 		reader:   bytes.NewReader(data),
 		name:     name,
-		size:     uint64(meta.Size),
+		size:     uint64(len(data)),
 	}, nil
 }
 
@@ -557,7 +681,7 @@ func (s *larkStorage) Stat(ctx context.Context, name string) (FileInfo, error) {
 	return &baseFileInfo{
 		name:  meta.Name,
 		path:  name,
-		size:  uint64(meta.Size),
+		size:  0,
 		isDir: isDir,
 	}, nil
 }
@@ -695,11 +819,15 @@ func (s *larkStorage) Remove(ctx context.Context, name string) error {
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
-	token, _, err := s.resolvePath(ctx, name)
+	token, isDir, err := s.resolvePath(ctx, name)
 	if err != nil {
 		return err
 	}
-	u := fmt.Sprintf(larkBaseURL+larkDeleteAPI, token)
+	fileType := "file"
+	if isDir {
+		fileType = "folder"
+	}
+	u := fmt.Sprintf(larkBaseURL+larkDeleteAPI+"?type=%s", token, fileType)
 	data, err := s.doDelete(ctx, u)
 	if err != nil {
 		return err
@@ -735,6 +863,7 @@ func (s *larkStorage) WriteFile(ctx context.Context, name string, data []byte, p
 	w.WriteField("file_name", fileName)
 	w.WriteField("parent_type", "explorer")
 	w.WriteField("parent_node", parentToken)
+	w.WriteField("size", strconv.Itoa(len(data)))
 	fw, err := w.CreateFormFile("file", fileName)
 	if err != nil {
 		return err
@@ -757,7 +886,9 @@ func (s *larkStorage) WriteFile(ctx context.Context, name string, data []byte, p
 	}
 
 	if s.chatID != "" {
-		_ = s.shareFile(ctx, resp.Data.FileToken, s.chatID)
+		if serr := s.shareFile(ctx, resp.Data.FileToken, s.chatID); serr != nil {
+			fmt.Fprintf(os.Stderr, "WARNING: share file to chat failed: %v\n", serr)
+		}
 	}
 
 	return nil
@@ -767,26 +898,38 @@ func (s *larkStorage) Rename(ctx context.Context, oldName, newName string) error
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
-	token, _, err := s.resolvePath(ctx, oldName)
-	if err != nil {
-		return err
+
+	// Check for buffered write (from Create+Close without upload)
+	s.writeBufsMu.Lock()
+	data, hasBuf := s.writeBufs[oldName]
+	if hasBuf {
+		delete(s.writeBufs, oldName)
 	}
-	_, newFileName := path.Split(newName)
-	body, _ := json.Marshal(map[string]string{"name": newFileName})
-	u := fmt.Sprintf(larkBaseURL+larkUpdateAPI, token)
-	data, err := s.doPatch(ctx, u, body)
-	if err != nil {
-		return err
+	s.writeBufsMu.Unlock()
+
+	if !hasBuf {
+		// Download old file content
+		file, err := s.Open(ctx, oldName)
+		if err != nil {
+			return fmt.Errorf("rename open old file failed: %w", err)
+		}
+		data, err = io.ReadAll(file)
+		file.Close()
+		if err != nil {
+			return fmt.Errorf("rename read old file failed: %w", err)
+		}
 	}
-	var resp struct {
-		Code int    `json:"code"`
-		Msg  string `json:"msg"`
+
+	// Upload to new path
+	if err := s.WriteFile(ctx, newName, data, 0o644); err != nil {
+		return fmt.Errorf("rename write new file failed: %w", err)
 	}
-	if err := json.Unmarshal(data, &resp); err != nil {
-		return fmt.Errorf("lark rename decode failed: %w", err)
-	}
-	if resp.Code != 0 {
-		return fmt.Errorf("lark rename error code %d: %s", resp.Code, resp.Msg)
+
+	// Delete old file — only if it was persisted in Lark (not buffered)
+	if !hasBuf {
+		if err := s.Remove(ctx, oldName); err != nil {
+			fmt.Fprintf(os.Stderr, "WARNING: rename remove old file %s failed: %v\n", oldName, err)
+		}
 	}
 	return nil
 }
@@ -815,34 +958,9 @@ func (s *larkStorage) Join(elem ...string) string {
 	return path.Join(elem...)
 }
 
-// ---- Share to chat ----
-
-type larkMsgContent struct {
-	FileToken string `json:"file_token"`
-}
-
 func (s *larkStorage) shareFile(ctx context.Context, fileToken, chatID string) error {
-	content, _ := json.Marshal(larkMsgContent{FileToken: fileToken})
-	body, _ := json.Marshal(map[string]string{
-		"receive_id": chatID,
-		"msg_type":   "file",
-		"content":    string(content),
-	})
-	data, err := s.doPost(ctx, larkBaseURL+larkSendMsgAPI, "application/json", bytes.NewReader(body))
-	if err != nil {
-		return fmt.Errorf("lark share request failed: %w", err)
-	}
-	var resp struct {
-		Code int    `json:"code"`
-		Msg  string `json:"msg"`
-	}
-	if err := json.Unmarshal(data, &resp); err != nil {
-		return fmt.Errorf("lark share decode failed: %w", err)
-	}
-	if resp.Code != 0 {
-		return fmt.Errorf("lark share error code %d: %s", resp.Code, resp.Msg)
-	}
-	return nil
+	// Grant full access to the chat so members can see the file
+	return s.grantFullAccess(ctx, fileToken, "file")
 }
 
 func (s *larkStorage) ShareToChat(ctx context.Context, name, chatID string) error {
@@ -884,6 +1002,9 @@ type larkWriteFile struct {
 
 func (f *larkWriteFile) Write(p []byte) (int, error) { return f.buf.Write(p) }
 func (f *larkWriteFile) Close() error {
-	return f.store.WriteFile(context.Background(), f.name, f.buf.Bytes(), 0o644)
+	f.store.writeBufsMu.Lock()
+	f.store.writeBufs[f.name] = f.buf.Bytes()
+	f.store.writeBufsMu.Unlock()
+	return nil
 }
 func (f *larkWriteFile) String() string { return f.name }
