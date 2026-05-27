@@ -286,6 +286,6 @@ func fnWidthBucket(args []string) string {
 	if x >= max {
 		return strconv.Itoa(num + 1)
 	}
-	bucket := int((x-min)/(max-min)*float64(num)) + 1
+	bucket := int(math.Floor((x-min)/(max-min)*float64(num))) + 1
 	return strconv.Itoa(bucket)
 }

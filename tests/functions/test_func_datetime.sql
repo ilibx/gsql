@@ -1,0 +1,84 @@
+-- Test datetime functions
+-- Uses users(id,name,email,age,city), orders(order_id,user_id,product_id,quantity,amount,order_date)
+
+-- CURRENT_DATE, CURRENT_TIMESTAMP (0-arg)
+SELECT CURRENT_DATE() AS today FROM users LIMIT 1;
+SELECT CURRENT_TIMESTAMP() AS now FROM users LIMIT 1;
+
+-- UNIX_TIMESTAMP (0-arg and 1-arg)
+SELECT UNIX_TIMESTAMP() AS ts_now FROM users LIMIT 1;
+SELECT UNIX_TIMESTAMP('2026-01-15') AS ts_date FROM users LIMIT 1;
+
+-- FROM_UNIXTIME (1-arg and 2-arg)
+SELECT FROM_UNIXTIME(1768492800) AS dt FROM users LIMIT 1;
+SELECT FROM_UNIXTIME(1768492800, 'yyyy-MM-dd') AS dt_fmt FROM users LIMIT 1;
+
+-- TO_DATE
+SELECT TO_DATE('2026-01-15 10:30:00') AS dt FROM users LIMIT 1;
+SELECT TO_DATE(order_date) AS ord_dt FROM orders LIMIT 1;
+
+-- YEAR
+SELECT YEAR('2026-01-15') AS yr FROM users LIMIT 1;
+SELECT YEAR(order_date) AS ord_yr FROM orders LIMIT 1;
+
+-- MONTH
+SELECT MONTH('2026-01-15') AS mon FROM users LIMIT 1;
+SELECT MONTH(order_date) AS ord_mon FROM orders LIMIT 1;
+
+-- DAY, DAYOFMONTH
+SELECT DAY('2026-01-15') AS dy, DAYOFMONTH('2026-01-15') AS dom FROM users LIMIT 1;
+SELECT DAY(order_date) AS ord_day FROM orders LIMIT 1;
+
+-- HOUR
+SELECT HOUR('2026-01-15 10:30:45') AS hr FROM users LIMIT 1;
+
+-- MINUTE
+SELECT MINUTE('2026-01-15 10:30:45') AS min FROM users LIMIT 1;
+
+-- SECOND
+SELECT SECOND('2026-01-15 10:30:45') AS sec FROM users LIMIT 1;
+
+-- WEEKOFYEAR
+SELECT WEEKOFYEAR('2026-01-15') AS wk FROM users LIMIT 1;
+SELECT WEEKOFYEAR(order_date) AS ord_wk FROM orders LIMIT 1;
+
+-- DATEDIFF
+SELECT DATEDIFF('2026-01-20', '2026-01-15') AS diff FROM users LIMIT 1;
+
+-- DATE_ADD
+SELECT DATE_ADD('2026-01-15', 5) AS added FROM users LIMIT 1;
+
+-- DATE_SUB
+SELECT DATE_SUB('2026-01-15', 5) AS subd FROM users LIMIT 1;
+
+-- DATE_FORMAT
+SELECT DATE_FORMAT('2026-01-15', 'yyyy/MM/dd') AS fmt FROM users LIMIT 1;
+
+-- ADD_MONTHS
+SELECT ADD_MONTHS('2026-01-15', 2) AS added_mon FROM users LIMIT 1;
+SELECT ADD_MONTHS('2026-01-31', 1) AS added_mon_eom FROM users LIMIT 1;
+SELECT ADD_MONTHS(order_date, 1) AS ord_next_mon FROM orders LIMIT 1;
+
+-- LAST_DAY
+SELECT LAST_DAY('2026-02-15') AS last_day FROM users LIMIT 1;
+
+-- NEXT_DAY
+SELECT NEXT_DAY('2026-01-15', 'Monday') AS next_mon FROM users LIMIT 1;
+SELECT NEXT_DAY(order_date, 'Fri') AS next_fri FROM orders LIMIT 1;
+
+-- MONTHS_BETWEEN
+SELECT MONTHS_BETWEEN('2026-03-15', '2026-01-15') AS mons FROM users LIMIT 1;
+
+-- QUARTER
+SELECT QUARTER('2026-04-15') AS qtr FROM users LIMIT 1;
+SELECT QUARTER(order_date) AS ord_qtr FROM orders LIMIT 1;
+
+-- TRUNC
+SELECT TRUNC('2026-01-15', 'MM') AS trunc_mm FROM users LIMIT 1;
+SELECT TRUNC('2026-01-15', 'YY') AS trunc_yy FROM users LIMIT 1;
+
+-- FROM_UTC_TIMESTAMP
+SELECT FROM_UTC_TIMESTAMP('2026-01-15 10:00:00', 'Asia/Shanghai') AS utc_to_sh FROM users LIMIT 1;
+
+-- TO_UTC_TIMESTAMP
+SELECT TO_UTC_TIMESTAMP('2026-01-15 18:00:00', 'Asia/Shanghai') AS sh_to_utc FROM users LIMIT 1;

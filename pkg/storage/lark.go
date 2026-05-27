@@ -295,8 +295,23 @@ func (s *larkStorage) doGet(ctx context.Context, apiURL string) ([]byte, error) 
 	if err != nil {
 		return nil, err
 	}
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("lark API %s returned status %d: %s", apiURL, resp.StatusCode, strings.TrimSpace(string(data)))
+	return data, nil
+}
+
+func (s *larkStorage) doDownload(ctx context.Context, apiURL string) ([]byte, error) {
+	data, err := s.doGet(ctx, apiURL)
+	if err != nil {
+		return nil, err
+	}
+	// Check for Lark error JSON response (some download APIs return
+	// error JSON even with 200 status, others return non-200 with
+	// error JSON).
+	var errResp struct {
+		Code int    `json:"code"`
+		Msg  string `json:"msg"`
+	}
+	if json.Unmarshal(data, &errResp) == nil && errResp.Code != 0 {
+		return nil, fmt.Errorf("lark download error code %d: %s", errResp.Code, errResp.Msg)
 	}
 	return data, nil
 }
@@ -683,22 +698,7 @@ func (s *larkStorage) Open(ctx context.Context, name string) (File, error) {
 	var data []byte
 	if entryType == "file" {
 		u := fmt.Sprintf("%s%s/%s/download", larkBaseURL, larkDriveAPI, token)
-		data, err = s.doGet(ctx, u)
-		if err != nil {
-			return nil, err
-		}
-		var resp struct {
-			Code int    `json:"code"`
-			Msg  string `json:"msg"`
-			Data struct {
-				FileToken string `json:"file_token"`
-				FileName  string `json:"file_name"`
-				Size      int    `json:"size"`
-			} `json:"data"`
-		}
-		if err := json.Unmarshal(data, &resp); err == nil && resp.Code != 0 {
-			return nil, fmt.Errorf("lark download error code %d: %s", resp.Code, resp.Msg)
-		}
+		data, err = s.doDownload(ctx, u)
 	} else {
 		data, err = s.downloadViaExport(ctx, token, entryType)
 		if err != nil {

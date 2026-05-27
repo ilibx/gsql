@@ -134,3 +134,11 @@ func TestCSVSkipHeader(t *testing.T) {
 	runTestSQL(t, "csv_skip_header", "test_csv_skip_header.sql")
 }
 
+func TestFuncAggregate(t *testing.T)       { runTestSQL(t, "func_aggregate", filepath.Join("functions", "test_func_aggregate.sql")) }
+func TestFuncMath(t *testing.T)            { runTestSQL(t, "func_math", filepath.Join("functions", "test_func_math.sql")) }
+func TestFuncString(t *testing.T)          { runTestSQL(t, "func_string", filepath.Join("functions", "test_func_string.sql")) }
+func TestFuncConditional(t *testing.T)     { runTestSQL(t, "func_conditional", filepath.Join("functions", "test_func_conditional.sql")) }
+func TestFuncDatetime(t *testing.T)        { runTestSQL(t, "func_datetime", filepath.Join("functions", "test_func_datetime.sql")) }
+func TestFuncWindow(t *testing.T)          { runTestSQL(t, "func_window", filepath.Join("functions", "test_func_window.sql")) }
+func TestFuncMisc(t *testing.T)            { runTestSQL(t, "func_misc", filepath.Join("functions", "test_func_misc.sql")) }
+

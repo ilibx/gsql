@@ -2,6 +2,8 @@ package plan
 
 import (
 	"testing"
+
+	"github.com/ilibx/gsql/pkg/storage"
 )
 
 func TestLookupFuncExists(t *testing.T) {
@@ -229,10 +231,10 @@ func TestListFuncs(t *testing.T) {
 	}
 }
 
-func makeRows(col string, vals ...string) []map[string]string {
-	rows := make([]map[string]string, len(vals))
+func makeRows(col string, vals ...string) []storage.Row {
+	rows := make([]storage.Row, len(vals))
 	for i, v := range vals {
-		rows[i] = map[string]string{col: v}
+		rows[i] = storage.Row{col: v}
 	}
 	return rows
 }

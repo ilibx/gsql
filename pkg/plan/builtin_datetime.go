@@ -323,7 +323,14 @@ func fnAddMonths(args []string) string {
 	if err != nil {
 		return args[0]
 	}
-	return t.AddDate(0, n, 0).Format("2006-01-02")
+	result := t.AddDate(0, n, 0)
+	// If the original day exceeds the last day of the target month,
+	// truncate to the last day of the target month (standard SQL behavior).
+	// Go's AddDate wraps to next month in this case.
+	if t.Day() != result.Day() {
+		result = result.AddDate(0, 0, -result.Day())
+	}
+	return result.Format("2006-01-02")
 }
 
 func fnLastDay(args []string) string {
@@ -378,11 +385,11 @@ func fnMonthsBetween(args []string) string {
 		return "0"
 	}
 	months := (end.Year()-start.Year())*12 + int(end.Month()) - int(start.Month())
-	// Adjust for day of month
-	if end.Day() < start.Day() {
-		months--
-	}
-	return strconv.Itoa(months)
+	// Add fractional month based on day difference
+	dayDiff := float64(end.Day() - start.Day())
+	daysInMonth := time.Date(start.Year(), start.Month()+1, 0, 0, 0, 0, 0, time.UTC).Day()
+	result := float64(months) + dayDiff/float64(daysInMonth)
+	return strconv.FormatFloat(result, 'f', 6, 64)
 }
 
 func fnQuarter(args []string) string {
@@ -459,19 +466,26 @@ func fnToUtcTimestamp(args []string) string {
 }
 
 func hiveFmtToGo(fmt string) string {
-	// Simple Hive date format to Go format conversion
-	repl := map[string]string{
-		"yyyy": "2006", "yy": "06",
-		"MM": "01", "M": "1",
-		"dd": "02", "d": "2",
-		"HH": "15", "H": "15",
-		"mm": "04", "m": "4",
-		"ss": "05", "s": "5",
-		"SSS": "000",
+	// Ordered replacements: longer patterns first to avoid partial replacement
+	type repl struct{ from, to string }
+	repls := []repl{
+		{"yyyy", "2006"},
+		{"yy", "06"},
+		{"MM", "01"},
+		{"M", "1"},
+		{"dd", "02"},
+		{"d", "2"},
+		{"HH", "15"},
+		{"H", "15"},
+		{"mm", "04"},
+		{"m", "4"},
+		{"ss", "05"},
+		{"s", "5"},
+		{"SSS", "000"},
 	}
 	result := fmt
-	for k, v := range repl {
-		result = strings.ReplaceAll(result, k, v)
+	for _, r := range repls {
+		result = strings.ReplaceAll(result, r.from, r.to)
 	}
 	return result
 }

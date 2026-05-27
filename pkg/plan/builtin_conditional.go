@@ -1,6 +1,9 @@
 package plan
 
-import "strconv"
+import (
+	"strconv"
+	"strings"
+)
 
 func registerConditionalBuiltins() {
 	RegisterFunc(&FuncDef{
@@ -30,7 +33,7 @@ func fnCast(args []string) string {
 		return args[0]
 	}
 	val := args[0]
-	typ := args[1]
+	typ := strings.ToUpper(args[1])
 	switch typ {
 	case "INT", "INTEGER":
 		if f, err := strconv.ParseFloat(val, 64); err == nil {
