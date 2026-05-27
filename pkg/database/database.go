@@ -3,6 +3,7 @@ package database
 import (
 	"database/sql"
 	"fmt"
+	"net/url"
 	"strings"
 
 	"github.com/ilibx/gsql/pkg/catalog"
@@ -77,8 +78,12 @@ func (d *sqlDB) Close() error {
 }
 
 // Open creates a Database connection from table options.
+// If storage is not set, it is inferred from the url scheme.
 func Open(tbl *catalog.Table) (Database, error) {
 	storageType := strings.ToLower(tbl.Option("storage", ""))
+	if storageType == "" {
+		storageType = InferStorageFromURL(tbl.Option("url", ""))
+	}
 	driver := driverFor(storageType)
 	if driver == "" {
 		return nil, fmt.Errorf("unsupported database storage type: %q", storageType)
@@ -234,7 +239,7 @@ func driverFor(storageType string) string {
 func dataSourceName(tbl *catalog.Table) string {
 	rawURL := tbl.Option("url", "")
 	if rawURL != "" {
-		return rawURL
+		return parseDSN(rawURL)
 	}
 	storageType := strings.ToLower(tbl.Option("storage", ""))
 	switch storageType {
@@ -263,11 +268,65 @@ func dataSourceName(tbl *catalog.Table) string {
 	return rawURL
 }
 
+func parseDSN(rawURL string) string {
+	if !strings.Contains(rawURL, "://") {
+		return rawURL
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return rawURL
+	}
+	switch u.Scheme {
+	case "mysql":
+		user := u.User.Username()
+		pass, _ := u.User.Password()
+		host := u.Host
+		db := strings.TrimPrefix(u.Path, "/")
+		return fmt.Sprintf("%s:%s@tcp(%s)/%s?charset=utf8mb4&parseTime=true", user, pass, host, db)
+	case "postgres", "postgresql":
+		user := u.User.Username()
+		pass, _ := u.User.Password()
+		host := u.Hostname()
+		port := u.Port()
+		db := strings.TrimPrefix(u.Path, "/")
+		ssl := u.Query().Get("sslmode")
+		if ssl == "" {
+			ssl = "disable"
+		}
+		return fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=%s", host, port, user, pass, db, ssl)
+	case "sqlite", "sqlite3":
+		return strings.TrimPrefix(u.Path, "/")
+	}
+	return rawURL
+}
+
 // IsDatabase returns true if the storage type is a supported database.
 func IsDatabase(storageType string) bool {
+	if storageType == "" {
+		return false
+	}
 	switch storageType {
 	case "mysql", "postgres", "postgresql", "sqlite", "sqlite3":
 		return true
 	}
 	return false
+}
+
+func InferStorageFromURL(rawURL string) string {
+	if !strings.Contains(rawURL, "://") {
+		return ""
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return ""
+	}
+	switch u.Scheme {
+	case "mysql":
+		return "mysql"
+	case "postgres", "postgresql":
+		return "postgres"
+	case "sqlite", "sqlite3":
+		return "sqlite"
+	}
+	return ""
 }

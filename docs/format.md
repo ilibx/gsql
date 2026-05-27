@@ -180,11 +180,44 @@ WITH (
 )
 ```
 
+### 指定工作表
+
+通过 `sheet` 选项指定工作表名称（默认 "Sheet1"）：
+
+```sql
+WITH (
+  ...
+  sheet = 'Students'   -- 指定工作表名，读取时也生效
+)
+```
+
+写入示例：
+```sql
+CREATE TABLE excel_sheet (
+  id INT,
+  name STRING,
+  score INT
+)
+WITH (
+  storage = 'local',
+  format = 'xlsx',
+  location = '/tmp/sheet_data',
+  file_name = 'grades.xlsx',
+  sheet = 'Students'
+);
+
+INSERT OVERWRITE TABLE excel_sheet
+SELECT 1 AS id, 'Alice' AS name, 95 AS score;
+-- 输出到 Students 工作表
+
+-- 读取时指定相同 sheet 名
+SELECT * FROM excel_sheet;
+```
+
 输出效果：
 | id | name | score |
 |----|------|-------|
 | 1  | Alice | 95   |
-| 2  | Bob   | 87   |
 
 ---
 

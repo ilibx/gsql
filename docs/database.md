@@ -12,7 +12,7 @@ gsql 支持将 **MySQL**、**PostgreSQL**、**SQLite** 作为数据源和数据�
 
 | 参数 | 说明 |
 |------|------|
-| `storage` | 数据库类型：`mysql`、`postgres`、`sqlite` |
+| `storage` | 数据库类型：`mysql`、`postgres`、`sqlite`（可省略，从 `url` 自动推断） |
 | `table_name` | 目标数据库中的表名（默认与 gsql 表名相同） |
 | `query` | 可选，自定义查询语句作为数据源 |
 
@@ -20,24 +20,26 @@ gsql 支持将 **MySQL**、**PostgreSQL**、**SQLite** 作为数据源和数据�
 
 支持两种配置方式：
 
-**URL 方式（推荐）**：
+**URL 方式（推荐）**—— `storage` 可省略，自动从 URL 推断：
+
 ```sql
 -- MySQL
 CREATE TABLE t (...) WITH (
-  storage = 'mysql',
-  url = 'user:password@tcp(host:3306)/dbname?charset=utf8mb4&parseTime=true'
+  url = 'mysql://user:password@host:3306/dbname'
 );
 
 -- PostgreSQL
 CREATE TABLE t (...) WITH (
   storage = 'postgres',
-  url = 'host=host port=5432 user=postgres password=secret dbname=mydb sslmode=disable'
+  url = 'postgres://user:password@host:5432/dbname?sslmode=disable'
 );
 
 -- SQLite
 CREATE TABLE t (...) WITH (
   storage = 'sqlite',
-  url = '/path/to/db.sqlite'
+  url = 'sqlite:///path/to/db.sqlite'
+  -- 或直接传路径
+  -- url = '/path/to/db.sqlite'
 );
 ```
 

@@ -15,7 +15,7 @@ func TestDecodeEncodeCSV(t *testing.T) {
 		{Name: "col2", Type: "text"},
 	}
 	csvData := "a1,b1\na2,b2\n"
-	opts := CSVOptions{
+	opts := SerdeOptions{
 		Delimiter: ',',
 		Quote:     '"',
 	}
@@ -52,7 +52,7 @@ func TestDecodeEncodeJSON(t *testing.T) {
 	jsonData := `{"col1":"a1","col2":"b1"}
 {"col1":"a2","col2":"b2"}
 `
-	opts := CSVOptions{}
+	opts := SerdeOptions{}
 	rows, err := Decode(ctx, "json", strings.NewReader(jsonData), columns, opts)
 	if err != nil {
 		t.Fatalf("Decode JSON: %v", err)
@@ -86,7 +86,7 @@ func TestDecodeEncodeJSON(t *testing.T) {
 func TestUnsupportedFormat(t *testing.T) {
 	ctx := context.Background()
 	columns := []catalog.ColumnDef{}
-	opts := CSVOptions{}
+	opts := SerdeOptions{}
 	_, err := Decode(ctx, "xml", strings.NewReader(""), columns, opts)
 	if err == nil {
 		t.Fatalf("expected error for unsupported format, got nil")

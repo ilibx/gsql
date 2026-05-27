@@ -43,9 +43,16 @@ type partitionFile struct {
 	PartitionValues map[string]string
 }
 
+func storageType(tbl *catalog.Table) string {
+	s := strings.ToLower(tbl.Option("storage", ""))
+	if s == "" {
+		return database.InferStorageFromURL(tbl.Option("url", ""))
+	}
+	return s
+}
+
 func ReadTableRows(tbl *catalog.Table, filters ...PartitionFilter) ([]Row, error) {
-	storageType := strings.ToLower(tbl.Option("storage", ""))
-	if database.IsDatabase(storageType) {
+	if database.IsDatabase(storageType(tbl)) {
 		return database.ReadTable(tbl)
 	}
 	store, err := GetStorage(tbl)
@@ -111,7 +118,7 @@ func readTable(store Storage, tbl *catalog.Table, filters []PartitionFilter) ([]
 	}
 
 	resultCh := make(chan fileResult, len(partitions))
-	csvOpts := serde.NewCSVOptions(tbl)
+	csvOpts := serde.NewSerdeOptions(tbl)
 	for _, pf := range partitions {
 		go func(pf partitionFile) {
 			var fileRows []Row
@@ -344,7 +351,7 @@ func resolveLocalPaths(store Storage, pattern string) ([]string, error) {
 	return []string{pattern}, nil
 }
 
-func readCSV(store Storage, path string, columns []catalog.ColumnDef, opts serde.CSVOptions) ([]Row, error) {
+func readCSV(store Storage, path string, columns []catalog.ColumnDef, opts serde.SerdeOptions) ([]Row, error) {
 	ctx := context.Background()
 	file, err := store.Open(ctx, path)
 	if err != nil {
@@ -363,10 +370,10 @@ func readJSON(store Storage, path string, columns []catalog.ColumnDef) ([]Row, e
 	}
 	defer file.Close()
 
-	return serde.Decode(ctx, "json", file, columns, serde.CSVOptions{})
+	return serde.Decode(ctx, "json", file, columns, serde.SerdeOptions{})
 }
 
-func readExcel(store Storage, path string, columns []catalog.ColumnDef, csvOpts serde.CSVOptions) ([]Row, error) {
+func readExcel(store Storage, path string, columns []catalog.ColumnDef, csvOpts serde.SerdeOptions) ([]Row, error) {
 	ctx := context.Background()
 	file, err := store.Open(ctx, path)
 	if err != nil {
@@ -378,8 +385,7 @@ func readExcel(store Storage, path string, columns []catalog.ColumnDef, csvOpts 
 }
 
 func WriteRows(tbl *catalog.Table, rows []Row, appendMode bool) error {
-	storageType := strings.ToLower(tbl.Option("storage", ""))
-	if database.IsDatabase(storageType) {
+	if database.IsDatabase(storageType(tbl)) {
 		return database.WriteTable(tbl, rows, appendMode)
 	}
 	store, err := GetStorage(tbl)
@@ -398,7 +404,7 @@ func writeTable(store Storage, tbl *catalog.Table, rows []Row, appendMode bool) 
 	}
 	outputFile := tbl.Option("file_name", defaultName)
 
-	csvOpts := serde.NewCSVOptions(tbl)
+	csvOpts := serde.NewSerdeOptions(tbl)
 
 	if len(tbl.PartitionBy) > 0 {
 		return writePartitionedTable(store, outputFile, format, tbl, rows, appendMode, csvOpts)
@@ -451,7 +457,7 @@ func writeTable(store Storage, tbl *catalog.Table, rows []Row, appendMode bool) 
 	return nil
 }
 
-func writePartitionedTable(store Storage, outputFile, format string, tbl *catalog.Table, rows []Row, appendMode bool, csvOpts serde.CSVOptions) error {
+func writePartitionedTable(store Storage, outputFile, format string, tbl *catalog.Table, rows []Row, appendMode bool, csvOpts serde.SerdeOptions) error {
 	ctx := context.Background()
 	partitionCols := tbl.PartitionBy
 

@@ -17,16 +17,17 @@ import (
 
 type Row map[string]string
 
-type CSVOptions struct {
+type SerdeOptions struct {
 	Delimiter       rune // field separator (default: ',')
 	SkipHeaderLines int  // lines to skip at file start (default: 0)
 	Quote           rune // quote character (default: '"')
 	Escape          rune // escape character (default: '"')
-	IncludeHeader   bool // write column names as first row
+	IncludeHeader   bool   // write column names as first row
+	SheetName       string // excel sheet name (default: first sheet on read, "Sheet1" on write)
 }
 
-func NewCSVOptions(tbl *catalog.Table) CSVOptions {
-	opts := CSVOptions{
+func NewSerdeOptions(tbl *catalog.Table) SerdeOptions {
+	opts := SerdeOptions{
 		Delimiter: ',',
 		Quote:     '"',
 		Escape:    '"',
@@ -48,10 +49,13 @@ func NewCSVOptions(tbl *catalog.Table) CSVOptions {
 	if h := tbl.Option("include_header", ""); h != "" {
 		opts.IncludeHeader = h == "true" || h == "1" || h == "yes"
 	}
+	if s := tbl.Option("sheet", ""); s != "" {
+		opts.SheetName = s
+	}
 	return opts
 }
 
-func Decode(ctx context.Context, format string, r io.Reader, columns []catalog.ColumnDef, opts CSVOptions) ([]Row, error) {
+func Decode(ctx context.Context, format string, r io.Reader, columns []catalog.ColumnDef, opts SerdeOptions) ([]Row, error) {
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
 	}
@@ -67,7 +71,7 @@ func Decode(ctx context.Context, format string, r io.Reader, columns []catalog.C
 	}
 }
 
-func Encode(ctx context.Context, format string, rows []Row, columns []catalog.ColumnDef, w io.Writer, opts CSVOptions) error {
+func Encode(ctx context.Context, format string, rows []Row, columns []catalog.ColumnDef, w io.Writer, opts SerdeOptions) error {
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
@@ -83,7 +87,7 @@ func Encode(ctx context.Context, format string, rows []Row, columns []catalog.Co
 	}
 }
 
-func decodeCSV(r io.Reader, columns []catalog.ColumnDef, opts CSVOptions) ([]Row, error) {
+func decodeCSV(r io.Reader, columns []catalog.ColumnDef, opts SerdeOptions) ([]Row, error) {
 	reader := csv.NewReader(bufio.NewReader(r))
 	reader.Comma = opts.Delimiter
 	reader.LazyQuotes = true
@@ -149,7 +153,7 @@ func decodeJSON(r io.Reader, columns []catalog.ColumnDef) ([]Row, error) {
 	return rows, nil
 }
 
-func encodeCSV(w io.Writer, rows []Row, columns []catalog.ColumnDef, opts CSVOptions) error {
+func encodeCSV(w io.Writer, rows []Row, columns []catalog.ColumnDef, opts SerdeOptions) error {
 	writer := csv.NewWriter(w)
 	writer.Comma = opts.Delimiter
 	defer writer.Flush()
@@ -186,7 +190,7 @@ func encodeJSON(w io.Writer, rows []Row) error {
 	return nil
 }
 
-func decodeExcel(r io.Reader, columns []catalog.ColumnDef, opts CSVOptions) ([]Row, error) {
+func decodeExcel(r io.Reader, columns []catalog.ColumnDef, opts SerdeOptions) ([]Row, error) {
 	data, err := io.ReadAll(r)
 	if err != nil {
 		return nil, err
@@ -198,6 +202,9 @@ func decodeExcel(r io.Reader, columns []catalog.ColumnDef, opts CSVOptions) ([]R
 	defer f.Close()
 
 	sheet := f.GetSheetName(0)
+	if opts.SheetName != "" {
+		sheet = opts.SheetName
+	}
 	rows, err := f.GetRows(sheet)
 	if err != nil {
 		return nil, err
@@ -221,11 +228,15 @@ func decodeExcel(r io.Reader, columns []catalog.ColumnDef, opts CSVOptions) ([]R
 	return result, nil
 }
 
-func encodeExcel(w io.Writer, rows []Row, columns []catalog.ColumnDef, opts CSVOptions) error {
+func encodeExcel(w io.Writer, rows []Row, columns []catalog.ColumnDef, opts SerdeOptions) error {
 	f := excelize.NewFile()
 	defer f.Close()
 
 	sheet := "Sheet1"
+	if opts.SheetName != "" {
+		f.SetSheetName("Sheet1", opts.SheetName)
+		sheet = opts.SheetName
+	}
 	rowOffset := 0
 	if opts.IncludeHeader {
 		for j, col := range columns {
