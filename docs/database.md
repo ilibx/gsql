@@ -22,7 +22,7 @@ CREATE TABLE users (
 WITH (
   storage = 'sqlite',
   location = '/tmp/mydb.db'
-);
+); -- 默认表名与 gsql 表名一致（users），可不写 table_name
 
 -- 写入数据（自动建表）
 INSERT OVERWRITE TABLE users
