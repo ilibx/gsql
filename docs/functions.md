@@ -251,6 +251,7 @@ SELECT SPLIT('a,b,c', ',') AS split_val;                      -- [a,b,c]
 | `MONTHS_BETWEEN(end, start)` | 2 | 月份差（含小数天数） |
 | `QUARTER(date)` | 1 | 季度 (1-4) |
 | `TRUNC(date [, unit])` | 1-2 | 日期截断到指定单位 |
+| `EXTRACT(part FROM date)` | 3 | 提取日期部分：YEAR/MONTH/DAY/HOUR/MINUTE/SECOND/WEEK/QUARTER |
 | `FROM_UTC_TIMESTAMP(ts, tz)` | 2 | UTC 时间戳转目标时区 |
 | `TO_UTC_TIMESTAMP(ts, tz)` | 2 | 源时区时间戳转 UTC |
 
@@ -296,6 +297,10 @@ SELECT MONTHS_BETWEEN('2026-03-15', '2026-01-15') AS mons;  -- 2.0
 SELECT QUARTER('2026-04-15') AS qtr;                        -- 2
 SELECT TRUNC('2026-01-15', 'MM') AS trunc_mm;               -- 2026-01-01
 SELECT TRUNC('2026-01-15', 'YY') AS trunc_yy;               -- 2026-01-01
+SELECT EXTRACT(YEAR FROM '2026-05-27') AS ext_year;          -- 2026
+SELECT EXTRACT(MONTH FROM '2026-05-27') AS ext_month;        -- 5
+SELECT EXTRACT(DAY FROM '2026-05-27') AS ext_day;            -- 27
+SELECT EXTRACT(HOUR FROM '2026-05-27 14:30:45') AS ext_hour; -- 14
 SELECT FROM_UTC_TIMESTAMP('2026-01-15 10:00:00', 'Asia/Shanghai') AS utc_to_sh;
 SELECT TO_UTC_TIMESTAMP('2026-01-15 18:00:00', 'Asia/Shanghai') AS sh_to_utc;
 ```

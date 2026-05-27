@@ -90,6 +90,8 @@ func TestHaving(t *testing.T)        { runTestSQL(t, "having", "basic", "test_ha
 func TestJoin(t *testing.T)          { runTestSQL(t, "join", "basic", "test_join.sql") }
 func TestMultiJoin(t *testing.T)     { runTestSQL(t, "multi_join", "basic", "test_multi_join.sql") }
 func TestSubquery(t *testing.T)      { runTestSQL(t, "subquery", "basic", "test_subquery.sql") }
+func TestSubqueryExists(t *testing.T) { runTestSQL(t, "subquery_exists", "basic", "test_subquery_exists.sql") }
+func TestSubqueryIn(t *testing.T)    { runTestSQL(t, "subquery_in", "basic", "test_subquery_in.sql") }
 func TestCTE(t *testing.T)           { runTestSQL(t, "cte", "basic", "test_cte.sql") }
 func TestMultiCTE(t *testing.T)      { runTestSQL(t, "multi_cte", "basic", "test_multi_cte.sql") }
 func TestUnion(t *testing.T)         { runTestSQL(t, "union", "basic", "test_union.sql") }
@@ -125,6 +127,7 @@ func TestInsertPartition(t *testing.T) {
 func TestPartition(t *testing.T)          { runTestSQL(t, "partition", "storage", "test_partition.sql") }
 func TestPartitionFormat(t *testing.T)    { runTestSQL(t, "partition_format", "storage", "test_partition_format.sql") }
 func TestExternalTable(t *testing.T)      { runTestSQL(t, "external_table", "storage", "test_external_table.sql") }
+func TestURLStorage(t *testing.T)         { runTestSQL(t, "url_storage", "storage", "test_url_storage.sql") }
 
 // format
 func TestCSVDelimiter(t *testing.T)       { runTestSQL(t, "csv_delimiter", "format", "test_csv_delimiter.sql") }

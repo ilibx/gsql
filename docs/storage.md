@@ -283,7 +283,6 @@ WITH (
 | `ftp://` | `ftp://user:pass@host:21/path` | FTP 服务器 |
 | `sftp://` | `sftp://user:pass@host:22/path` | SFTP 服务器 |
 | `s3://` | `s3://endpoint/bucket/prefix?params` | S3 兼容服务 |
-| `hdfs://` | `hdfs://namenode:8020/path` | HDFS |
 | `webdav://` | `webdav://user:pass@host/path` | WebDAV |
 | `git://` | `git:///path/to/repo` | Git 仓库 |
 | `lark://` | `lark://folder/path?app_id=xxx&app_secret=xxx&chat_id=xxx` | 飞书 Lark |

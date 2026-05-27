@@ -40,16 +40,6 @@ WITH (
   format = 'csv'
 );
 
--- Test HDFS URL
-CREATE TABLE hdfs_data_url (
-  id INT,
-  name STRING
-)
-WITH (
-  url = 'hdfs://namenode:8020/data/path',
-  format = 'csv'
-);
-
 -- Test WebDAV URL
 CREATE TABLE webdav_data_url (
   id INT,
@@ -76,9 +66,9 @@ CREATE TABLE ftp_mixed_url (
   name STRING
 )
 WITH (
-  url = 'ftp://ftp.example.com:21/test',
-  ftp_user = 'custom_user',
-  ftp_pass = 'custom_pass',
+  url = 'ftp://olduser:oldpass@ftp.example.com:21/test',
+  username = 'custom_user',
+  password = 'custom_pass',
   format = 'csv'
 );
 
@@ -86,7 +76,6 @@ WITH (
 SELECT 'ftp_data_url' AS table_name UNION ALL
 SELECT 's3_data_url' UNION ALL
 SELECT 'sftp_data_url' UNION ALL
-SELECT 'hdfs_data_url' UNION ALL
 SELECT 'webdav_data_url' UNION ALL
 SELECT 'gitlfs_data_url' UNION ALL
 SELECT 'ftp_mixed_url';

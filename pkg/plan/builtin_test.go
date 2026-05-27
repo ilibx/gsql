@@ -67,6 +67,7 @@ func TestLookupFuncExists(t *testing.T) {
 		{"WIDTH_BUCKET", FuncScalar},
 		{"FROM_UTC_TIMESTAMP", FuncScalar},
 		{"TO_UTC_TIMESTAMP", FuncScalar},
+		{"EXTRACT", FuncScalar},
 	}
 	for _, tt := range tests {
 		fn, ok := LookupFunc(tt.name)

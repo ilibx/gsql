@@ -107,6 +107,10 @@ func registerDateTimeBuiltins() {
 		Name: "TO_UTC_TIMESTAMP", Type: FuncScalar, MinArgs: 2, MaxArgs: 2,
 		ScalarFn: fnToUtcTimestamp,
 	})
+	RegisterFunc(&FuncDef{
+		Name: "EXTRACT", Type: FuncScalar, MinArgs: 3, MaxArgs: 3,
+		ScalarFn: fnExtract,
+	})
 }
 
 var dateParseFormats = []string{
@@ -470,6 +474,48 @@ func fnToUtcTimestamp(args []string) string {
 	// Treat the parsed time as being in the source timezone
 	t = time.Date(t.Year(), t.Month(), t.Day(), t.Hour(), t.Minute(), t.Second(), t.Nanosecond(), loc)
 	return t.UTC().Format("2006-01-02 15:04:05")
+}
+
+func fnExtract(args []string) string {
+	if len(args) < 3 {
+		return "0"
+	}
+	part := strings.ToUpper(args[0])
+	dateStr := args[2]
+	t, ok := parseDate(dateStr)
+	if !ok {
+		return "0"
+	}
+	switch part {
+	case "YEAR":
+		return strconv.Itoa(t.Year())
+	case "MONTH":
+		return strconv.Itoa(int(t.Month()))
+	case "DAY", "DAYOFMONTH":
+		return strconv.Itoa(t.Day())
+	case "HOUR":
+		return strconv.Itoa(t.Hour())
+	case "MINUTE":
+		return strconv.Itoa(t.Minute())
+	case "SECOND":
+		return strconv.Itoa(t.Second())
+	case "WEEK", "WEEKOFYEAR":
+		_, w := t.ISOWeek()
+		return strconv.Itoa(w)
+	case "QUARTER":
+		m := int(t.Month())
+		return strconv.Itoa((m-1)/3 + 1)
+	case "YEARDAY", "DOY":
+		return strconv.Itoa(t.YearDay())
+	case "DOW", "DAYOFWEEK":
+		d := int(t.Weekday())
+		if d == 0 {
+			d = 7
+		}
+		return strconv.Itoa(d)
+	default:
+		return "0"
+	}
 }
 
 func hiveFmtToGo(fmt string) string {

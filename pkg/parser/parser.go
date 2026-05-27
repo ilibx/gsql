@@ -249,10 +249,14 @@ func tokenName(t TokenType) string {
 		return "HAVING"
 	case SEMICOLON:
 		return ";"
-	case CREATE, TABLE, WITH, AS, INSERT, OVERWRITE, SELECT, FROM, WHERE, ORDER, BY, LIMIT, IS, NULL_KEYWORD, NOT, IN_KEYWORD, DISTINCT, EXTERNAL, OVER, PARTITION, VALUES, MINUS, PLUS, DIV:
+	case CREATE, TABLE, WITH, AS, INSERT, OVERWRITE, SELECT, FROM, WHERE, ORDER, BY, LIMIT, IS, NULL_KEYWORD, NOT, IN_KEYWORD, DISTINCT, EXTERNAL, OVER, PARTITION, VALUES, MINUS, PLUS, DIV,
+		UNION, CASE_KW, WHEN_KW, THEN_KW, ELSE_KW, END_KW, EXISTS_KW:
 		return strings.ToUpper(t.String())
 	default:
-		return "UNKNOWN"
+		if s := t.String(); s != "" {
+			return s
+		}
+		return fmt.Sprintf("TOKEN_%d", int(t))
 	}
 }
 
@@ -326,8 +330,34 @@ func (t TokenType) String() string {
 		return "END"
 	case EXISTS_KW:
 		return "EXISTS"
-case VALUES:
+	case VALUES:
 		return "VALUES"
+	case HAVING:
+		return "HAVING"
+	case EXPLAIN:
+		return "EXPLAIN"
+	case CAST_KW:
+		return "CAST"
+	case ROWS_KW:
+		return "ROWS"
+	case RANGE_KW:
+		return "RANGE"
+	case BETWEEN_KW:
+		return "BETWEEN"
+	case UNBOUNDED_KW:
+		return "UNBOUNDED"
+	case PRECEDING_KW:
+		return "PRECEDING"
+	case FOLLOWING_KW:
+		return "FOLLOWING"
+	case CURRENT_KW:
+		return "CURRENT"
+	case LATERAL_KW:
+		return "LATERAL"
+	case VIEW_KW:
+		return "VIEW"
+	case OUTER_KW:
+		return "OUTER"
 	default:
 		return ""
 	}
@@ -1624,15 +1654,27 @@ func (p *Parser) parseFuncArgs() ([]string, error) {
 			p.nextToken()
 			args = append(args, "-"+p.cur.Literal)
 			p.nextToken()
+		} else if isKeyword(p.cur.Type) {
+			args = append(args, p.cur.Literal)
+			p.nextToken()
 		} else {
 			return nil, fmt.Errorf("expected argument in function call, got %s", tokenName(p.cur.Type))
 		}
-		if p.cur.Type != COMMA {
+		// Allow keyword-separated args (e.g. EXTRACT(YEAR FROM date)) without commas
+		if p.cur.Type == RPAREN {
 			break
 		}
-		p.nextToken()
+		if p.cur.Type == COMMA {
+			p.nextToken()
+		}
 	}
 	return args, nil
+}
+
+func isKeyword(t TokenType) bool {
+	return t > IDENT && t != STRING && t != NUMBER && t != ASTERISK && t != COMMA &&
+		t != LPAREN && t != RPAREN && t != EQUAL && t != NOT_EQUAL &&
+		t != LT && t != GT && t != LTE && t != GTE && t != SEMICOLON
 }
 
 func (p *Parser) parseCastExpr() (*FuncCallExpr, error) {
