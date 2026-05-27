@@ -1,2 +1,4 @@
-bin/
+bin/gsql
+bin/gsql.*
+
 gsql

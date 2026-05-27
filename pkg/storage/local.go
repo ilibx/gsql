@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/ilibx/gsql/pkg/catalog"
+	"github.com/ilibx/gsql/pkg/database"
 	"github.com/ilibx/gsql/pkg/serde"
 )
 
@@ -43,6 +44,10 @@ type partitionFile struct {
 }
 
 func ReadTableRows(tbl *catalog.Table, filters ...PartitionFilter) ([]Row, error) {
+	storageType := strings.ToLower(tbl.Option("storage", ""))
+	if database.IsDatabase(storageType) {
+		return database.ReadTable(tbl)
+	}
 	store, err := GetStorage(tbl)
 	if err != nil {
 		return nil, err
@@ -373,6 +378,10 @@ func readExcel(store Storage, path string, columns []catalog.ColumnDef, csvOpts 
 }
 
 func WriteRows(tbl *catalog.Table, rows []Row, appendMode bool) error {
+	storageType := strings.ToLower(tbl.Option("storage", ""))
+	if database.IsDatabase(storageType) {
+		return database.WriteTable(tbl, rows, appendMode)
+	}
 	store, err := GetStorage(tbl)
 	if err != nil {
 		return err

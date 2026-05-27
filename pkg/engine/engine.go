@@ -511,13 +511,17 @@ func (e *Engine) makeFuncCallExpr(col string, sel *parser.SelectQuery) parser.Ex
 	if !ok || fn.Type != plan.FuncScalar {
 		return nil
 	}
+	inner := col[idx+1 : len(col)-1]
 	// Prefer full args from sel.Aggregates (handles multi-arg scalar functions)
+	colArg0 := inner
+	if commaIdx := strings.IndexByte(inner, ','); commaIdx >= 0 {
+		colArg0 = strings.TrimSpace(inner[:commaIdx])
+	}
 	for _, a := range sel.Aggregates {
-		if a.FuncName == funcName && len(a.Args) > 1 {
+		if a.FuncName == funcName && a.Column == colArg0 && len(a.Args) > 1 {
 			return &parser.FuncCallExpr{FuncName: funcName, Args: a.Args}
 		}
 	}
-	inner := col[idx+1 : len(col)-1]
 	var args []string
 	if strings.HasPrefix(inner, "DISTINCT ") {
 		inner = inner[9:]

@@ -448,6 +448,12 @@ func (l *lexer) readNumber() string {
 	for isDigit(l.ch) {
 		l.readChar()
 	}
+	if l.ch == '.' && isDigit(l.peekChar()) {
+		l.readChar()
+		for isDigit(l.ch) {
+			l.readChar()
+		}
+	}
 	return l.input[position:l.position]
 }
 
@@ -1610,6 +1616,10 @@ func (p *Parser) parseFuncArgs() ([]string, error) {
 			args = append(args, col)
 		} else if p.cur.Type == NUMBER || p.cur.Type == STRING {
 			args = append(args, p.cur.Literal)
+			p.nextToken()
+		} else if p.cur.Type == MINUS && p.peek.Type == NUMBER {
+			p.nextToken()
+			args = append(args, "-"+p.cur.Literal)
 			p.nextToken()
 		} else {
 			return nil, fmt.Errorf("expected argument in function call, got %s", tokenName(p.cur.Type))

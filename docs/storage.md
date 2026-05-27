@@ -2,6 +2,8 @@
 
 gsql 支持多种存储后端，可通过传统方式或 URL 方式配置。
 
+> 数据库类型（MySQL / PostgreSQL / SQLite）的用法见 [database.md](database.md)。
+
 ---
 
 ## 配置方式
@@ -285,7 +287,9 @@ WITH (
 | `webdav://` | `webdav://user:pass@host/path` | WebDAV |
 | `git://` | `git:///path/to/repo` | Git 仓库 |
 | `lark://` | `lark://folder/path?app_id=xxx&app_secret=xxx&chat_id=xxx` | 飞书 Lark |
-
+| `mysql://` | 见 [database.md](database.md) | MySQL 数据库 |
+| `postgres://` | 见 [database.md](database.md) | PostgreSQL 数据库 |
+| `sqlite://` | 见 [database.md](database.md) | SQLite 数据库 |
 ## 参数优先级
 
 1. 显式配置的参数（如 `username`、`password`）优先级最高
