@@ -12,6 +12,7 @@ type TokenType int
 type Token struct {
 	Type    TokenType
 	Literal string
+	Pos     int // byte position in input
 }
 
 type Parser struct {
@@ -248,7 +249,7 @@ func tokenName(t TokenType) string {
 		return "HAVING"
 	case SEMICOLON:
 		return ";"
-	case CREATE, TABLE, WITH, AS, INSERT, OVERWRITE, SELECT, FROM, WHERE, ORDER, BY, LIMIT, IS, NULL_KEYWORD, NOT, IN_KEYWORD, DISTINCT, EXTERNAL, OVER, PARTITION, VALUES:
+	case CREATE, TABLE, WITH, AS, INSERT, OVERWRITE, SELECT, FROM, WHERE, ORDER, BY, LIMIT, IS, NULL_KEYWORD, NOT, IN_KEYWORD, DISTINCT, EXTERNAL, OVER, PARTITION, VALUES, MINUS, PLUS, DIV:
 		return strings.ToUpper(t.String())
 	default:
 		return "UNKNOWN"
@@ -359,6 +360,7 @@ func (l *lexer) nextToken() Token {
 	l.skipWhitespace()
 
 	var tok Token
+	tok.Pos = l.position
 	switch l.ch {
 	case '*':
 		tok = Token{Type: ASTERISK, Literal: "*"}
@@ -604,13 +606,14 @@ func (p *Parser) parseColumnDefinitions() ([]ColumnDef, error) {
 
 func (p *Parser) parseWithOptions() (map[string]string, error) {
 	options := make(map[string]string)
+	sqlInput := p.l.input
 	for {
 		if p.cur.Type != IDENT {
 			return nil, fmt.Errorf("expected WITH option key, got %s", tokenName(p.cur.Type))
 		}
 		key := p.cur.Literal
 		if err := p.expectPeek(EQUAL); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("expected = after WITH option %q (option names use underscore, not hyphen)\n%s", key, formatErrorPos(sqlInput, p.peek.Pos, "here"))
 		}
 		p.nextToken()
 		if p.cur.Type != STRING && p.cur.Type != IDENT && p.cur.Type != NUMBER {
@@ -2053,4 +2056,23 @@ func removeComments(sql string) string {
 		cleaned = append(cleaned, line)
 	}
 	return strings.Join(cleaned, "\n")
+}
+
+// formatErrorPos formats a SQL error message with a position indicator.
+// Shows up to 60 chars of context around the error position.
+func formatErrorPos(input string, pos int, label string) string {
+	if pos < 0 || pos >= len(input) {
+		return ""
+	}
+	start := pos - 30
+	if start < 0 {
+		start = 0
+	}
+	end := pos + 30
+	if end > len(input) {
+		end = len(input)
+	}
+	snippet := strings.ReplaceAll(input[start:end], "\n", " ")
+	caret := strings.Repeat(" ", pos-start) + "^ " + label
+	return snippet + "\n" + caret
 }

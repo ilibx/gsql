@@ -59,7 +59,7 @@ func TestSetup(t *testing.T) {
 	runSQLOnEngine(t, engine.NewEngine(catalog.NewCatalog()), filepath.Join("tests", "setup.sql"))
 }
 
-func runTestSQL(t *testing.T, name, file string) {
+func runTestSQL(t *testing.T, name, dir, file string) {
 	t.Run(name, func(t *testing.T) {
 		if err := os.Chdir(rootDir); err != nil {
 			t.Fatalf("chdir to %s failed: %v", rootDir, err)
@@ -67,36 +67,36 @@ func runTestSQL(t *testing.T, name, file string) {
 		cat := catalog.NewCatalog()
 		eng := engine.NewEngine(cat)
 		runSQLOnEngine(t, eng, filepath.Join("tests", "setup.sql"))
-		runSQLOnEngine(t, eng, filepath.Join("tests", file))
+		runSQLOnEngine(t, eng, filepath.Join("tests", dir, file))
 	})
 }
 
-func TestSelect(t *testing.T)            { runTestSQL(t, "select", "test_select.sql") }
-func TestWhere(t *testing.T)             { runTestSQL(t, "where", "test_where.sql") }
-func TestLike(t *testing.T)              { runTestSQL(t, "like", "test_like.sql") }
-func TestIsNull(t *testing.T)            { runTestSQL(t, "is_null", "test_is_null.sql") }
-func TestIn(t *testing.T)                { runTestSQL(t, "in", "test_in.sql") }
-func TestCount(t *testing.T)             { runTestSQL(t, "count", "test_count.sql") }
-func TestDistinct(t *testing.T)          { runTestSQL(t, "distinct", "test_distinct.sql") }
-func TestOrderBy(t *testing.T)           { runTestSQL(t, "order_by", "test_order_by.sql") }
-func TestLimit(t *testing.T)             { runTestSQL(t, "limit", "test_limit.sql") }
-func TestAggregate(t *testing.T)         { runTestSQL(t, "aggregate", "test_aggregate.sql") }
-func TestGroupBy(t *testing.T)           { runTestSQL(t, "group_by", "test_group_by.sql") }
-func TestHaving(t *testing.T)            { runTestSQL(t, "having", "test_having.sql") }
-func TestArithmetic(t *testing.T)        { runTestSQL(t, "arithmetic", "test_arithmetic.sql") }
-func TestCaseWhen(t *testing.T)          { runTestSQL(t, "case_when", "test_case_when.sql") }
-func TestColumnAlias(t *testing.T)       { runTestSQL(t, "column_alias", "test_column_alias.sql") }
-func TestTableAlias(t *testing.T)        { runTestSQL(t, "table_alias", "test_table_alias.sql") }
-func TestJoin(t *testing.T)              { runTestSQL(t, "join", "test_join.sql") }
-func TestMultiJoin(t *testing.T)         { runTestSQL(t, "multi_join", "test_multi_join.sql") }
-func TestSubquery(t *testing.T)          { runTestSQL(t, "subquery", "test_subquery.sql") }
-func TestCTE(t *testing.T)               { runTestSQL(t, "cte", "test_cte.sql") }
-func TestMultiCTE(t *testing.T)          { runTestSQL(t, "multi_cte", "test_multi_cte.sql") }
-func TestUnion(t *testing.T)             { runTestSQL(t, "union", "test_union.sql") }
-func TestWindow(t *testing.T)            { runTestSQL(t, "window", "test_window.sql") }
-func TestExternalTable(t *testing.T)     { runTestSQL(t, "external_table", "test_external_table.sql") }
-func TestPartition(t *testing.T)         { runTestSQL(t, "partition", "test_partition.sql") }
+// basic
+func TestSelect(t *testing.T)        { runTestSQL(t, "select", "basic", "test_select.sql") }
+func TestWhere(t *testing.T)         { runTestSQL(t, "where", "basic", "test_where.sql") }
+func TestLike(t *testing.T)          { runTestSQL(t, "like", "basic", "test_like.sql") }
+func TestIsNull(t *testing.T)        { runTestSQL(t, "is_null", "basic", "test_is_null.sql") }
+func TestIn(t *testing.T)            { runTestSQL(t, "in", "basic", "test_in.sql") }
+func TestDistinct(t *testing.T)      { runTestSQL(t, "distinct", "basic", "test_distinct.sql") }
+func TestOrderBy(t *testing.T)       { runTestSQL(t, "order_by", "basic", "test_order_by.sql") }
+func TestLimit(t *testing.T)         { runTestSQL(t, "limit", "basic", "test_limit.sql") }
+func TestArithmetic(t *testing.T)    { runTestSQL(t, "arithmetic", "basic", "test_arithmetic.sql") }
+func TestColumnAlias(t *testing.T)   { runTestSQL(t, "column_alias", "basic", "test_column_alias.sql") }
+func TestTableAlias(t *testing.T)    { runTestSQL(t, "table_alias", "basic", "test_table_alias.sql") }
+func TestCount(t *testing.T)         { runTestSQL(t, "count", "basic", "test_count.sql") }
+func TestAggregate(t *testing.T)     { runTestSQL(t, "aggregate", "basic", "test_aggregate.sql") }
+func TestGroupBy(t *testing.T)       { runTestSQL(t, "group_by", "basic", "test_group_by.sql") }
+func TestHaving(t *testing.T)        { runTestSQL(t, "having", "basic", "test_having.sql") }
+func TestJoin(t *testing.T)          { runTestSQL(t, "join", "basic", "test_join.sql") }
+func TestMultiJoin(t *testing.T)     { runTestSQL(t, "multi_join", "basic", "test_multi_join.sql") }
+func TestSubquery(t *testing.T)      { runTestSQL(t, "subquery", "basic", "test_subquery.sql") }
+func TestCTE(t *testing.T)           { runTestSQL(t, "cte", "basic", "test_cte.sql") }
+func TestMultiCTE(t *testing.T)      { runTestSQL(t, "multi_cte", "basic", "test_multi_cte.sql") }
+func TestUnion(t *testing.T)         { runTestSQL(t, "union", "basic", "test_union.sql") }
+func TestWindow(t *testing.T)        { runTestSQL(t, "window", "basic", "test_window.sql") }
+func TestCaseWhen(t *testing.T)      { runTestSQL(t, "case_when", "basic", "test_case_when.sql") }
 
+// storage
 func TestInsertOverwrite(t *testing.T) {
 	if err := os.Chdir(rootDir); err != nil {
 		t.Fatalf("chdir to %s failed: %v", rootDir, err)
@@ -104,12 +104,11 @@ func TestInsertOverwrite(t *testing.T) {
 	cat := catalog.NewCatalog()
 	eng := engine.NewEngine(cat)
 	runSQLOnEngine(t, eng, filepath.Join("tests", "setup.sql"))
-	runSQLOnEngine(t, eng, filepath.Join("tests", "test_insert_overwrite.sql"))
+	runSQLOnEngine(t, eng, filepath.Join("tests", "storage", "test_insert_overwrite.sql"))
 	if _, err := os.Stat(filepath.Join(rootDir, "samples", "result", "top_users.csv")); os.IsNotExist(err) {
 		t.Fatal("expected output file samples/result/top_users.csv")
 	}
 }
-
 func TestInsertPartition(t *testing.T) {
 	if err := os.Chdir(rootDir); err != nil {
 		t.Fatalf("chdir to %s failed: %v", rootDir, err)
@@ -117,28 +116,25 @@ func TestInsertPartition(t *testing.T) {
 	cat := catalog.NewCatalog()
 	eng := engine.NewEngine(cat)
 	runSQLOnEngine(t, eng, filepath.Join("tests", "setup.sql"))
-	runSQLOnEngine(t, eng, filepath.Join("tests", "test_insert_partition.sql"))
-
-	// verify partition directory structure
+	runSQLOnEngine(t, eng, filepath.Join("tests", "storage", "test_insert_partition.sql"))
 	summaryFile := filepath.Join(rootDir, "samples", "result", "monthly", "year=2026", "summary.csv")
 	if !fileExists(summaryFile) {
 		t.Fatalf("expected partition output %s", summaryFile)
 	}
 }
+func TestPartition(t *testing.T)          { runTestSQL(t, "partition", "storage", "test_partition.sql") }
+func TestPartitionFormat(t *testing.T)    { runTestSQL(t, "partition_format", "storage", "test_partition_format.sql") }
+func TestExternalTable(t *testing.T)      { runTestSQL(t, "external_table", "storage", "test_external_table.sql") }
 
-func TestCSVDelimiter(t *testing.T) {
-	runTestSQL(t, "csv_delimiter", "test_csv_delimiter.sql")
-}
+// format
+func TestCSVDelimiter(t *testing.T)       { runTestSQL(t, "csv_delimiter", "format", "test_csv_delimiter.sql") }
+func TestCSVSkipHeader(t *testing.T)      { runTestSQL(t, "csv_skip_header", "format", "test_csv_skip_header.sql") }
 
-func TestCSVSkipHeader(t *testing.T) {
-	runTestSQL(t, "csv_skip_header", "test_csv_skip_header.sql")
-}
-
-func TestFuncAggregate(t *testing.T)       { runTestSQL(t, "func_aggregate", filepath.Join("functions", "test_func_aggregate.sql")) }
-func TestFuncMath(t *testing.T)            { runTestSQL(t, "func_math", filepath.Join("functions", "test_func_math.sql")) }
-func TestFuncString(t *testing.T)          { runTestSQL(t, "func_string", filepath.Join("functions", "test_func_string.sql")) }
-func TestFuncConditional(t *testing.T)     { runTestSQL(t, "func_conditional", filepath.Join("functions", "test_func_conditional.sql")) }
-func TestFuncDatetime(t *testing.T)        { runTestSQL(t, "func_datetime", filepath.Join("functions", "test_func_datetime.sql")) }
-func TestFuncWindow(t *testing.T)          { runTestSQL(t, "func_window", filepath.Join("functions", "test_func_window.sql")) }
-func TestFuncMisc(t *testing.T)            { runTestSQL(t, "func_misc", filepath.Join("functions", "test_func_misc.sql")) }
-
+// functions
+func TestFuncAggregate(t *testing.T)   { runTestSQL(t, "func_aggregate", "functions", "test_func_aggregate.sql") }
+func TestFuncMath(t *testing.T)        { runTestSQL(t, "func_math", "functions", "test_func_math.sql") }
+func TestFuncString(t *testing.T)      { runTestSQL(t, "func_string", "functions", "test_func_string.sql") }
+func TestFuncConditional(t *testing.T) { runTestSQL(t, "func_conditional", "functions", "test_func_conditional.sql") }
+func TestFuncDatetime(t *testing.T)    { runTestSQL(t, "func_datetime", "functions", "test_func_datetime.sql") }
+func TestFuncWindow(t *testing.T)      { runTestSQL(t, "func_window", "functions", "test_func_window.sql") }
+func TestFuncMisc(t *testing.T)        { runTestSQL(t, "func_misc", "functions", "test_func_misc.sql") }
