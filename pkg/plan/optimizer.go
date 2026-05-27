@@ -155,17 +155,17 @@ func (opt *Optimizer) Optimize(node LogicalNode) LogicalNode {
 	return walkAndOptimize(node, opt)
 }
 
-func (opt *Optimizer) OptimizeWithPruning(node LogicalNode) LogicalNode {
+func (opt *Optimizer) OptimizeWithPruning(node LogicalNode, cat *catalog.Catalog) LogicalNode {
 	node = opt.Optimize(node)
-	return ColumnPruning(node)
+	return ColumnPruning(node, cat)
 }
 
 // ColumnPruning adds Project nodes on top of LogicalScan to prune
 // columns that are not referenced anywhere in the plan tree.
 // Must be called on the ROOT node (not recursively on children).
-func ColumnPruning(node LogicalNode) LogicalNode {
+func ColumnPruning(node LogicalNode, cat *catalog.Catalog) LogicalNode {
 	needed := collectAllColumnRefs(node)
-	return injectPruneProjects(node, needed)
+	return injectPruneProjects(node, needed, cat)
 }
 
 // collectAllColumnRefs walks the tree and returns all column names
@@ -254,6 +254,9 @@ func collectExprCols(expr parser.Expression, cols map[string]bool) {
 		if v.RightColumn != "" {
 			cols[v.RightColumn] = true
 		}
+		if v.Expr != nil {
+			collectExprCols(v.Expr, cols)
+		}
 	case *parser.LogicalExpr:
 		collectExprCols(v.Left, cols)
 		collectExprCols(v.Right, cols)
@@ -270,6 +273,13 @@ func collectExprCols(expr parser.Expression, cols map[string]bool) {
 		collectExprCols(v.Right, cols)
 	case *parser.ColumnRef:
 		cols[v.Name] = true
+	case *parser.FuncCallExpr:
+		for _, arg := range v.Args {
+			if arg != "" {
+				cols[arg] = true
+			}
+		}
+	case *parser.LiteralExpr:
 	case *parser.CaseExpr:
 		for _, b := range v.Branches {
 			collectExprCols(b.Condition, cols)
@@ -279,9 +289,30 @@ func collectExprCols(expr parser.Expression, cols map[string]bool) {
 	}
 }
 
-func injectPruneProjects(node LogicalNode, needed map[string]bool) LogicalNode {
-	switch node.(type) {
+func injectPruneProjects(node LogicalNode, needed map[string]bool, cat *catalog.Catalog) LogicalNode {
+	switch n := node.(type) {
 	case *LogicalScan:
+		if len(needed) == 0 {
+			return node
+		}
+		if cat != nil && n.TableName != "" {
+			if t, ok := cat.GetTable(n.TableName); ok {
+				tableCols := make(map[string]bool)
+				for _, c := range t.Columns {
+					tableCols[c.Name] = true
+				}
+				filtered := make(map[string]bool)
+				for c := range needed {
+					if tableCols[c] {
+						filtered[c] = true
+					}
+				}
+				needed = filtered
+			}
+		} else {
+			// No FROM clause or table not found — no real columns to prune
+			needed = make(map[string]bool)
+		}
 		if len(needed) == 0 {
 			return node
 		}
@@ -296,7 +327,7 @@ func injectPruneProjects(node LogicalNode, needed map[string]bool) LogicalNode {
 		changed := false
 		newChildren := make([]LogicalNode, len(children))
 		for i, c := range children {
-			newChildren[i] = injectPruneProjects(c, needed)
+			newChildren[i] = injectPruneProjects(c, needed, cat)
 			if newChildren[i] != c {
 				changed = true
 			}
@@ -313,7 +344,7 @@ func injectPruneProjects(node LogicalNode, needed map[string]bool) LogicalNode {
 		changed := false
 		newChildren := make([]LogicalNode, len(children))
 		for i, c := range children {
-			newChildren[i] = injectPruneProjects(c, needed)
+			newChildren[i] = injectPruneProjects(c, needed, cat)
 			if newChildren[i] != c {
 				changed = true
 			}

@@ -144,7 +144,7 @@ func (e *Engine) executeExplain(query *parser.SelectQuery) error {
 		return err
 	}
 
-	optimized := plan.CatalogOptimizer(e.catalog).OptimizeWithPruning(logical)
+	optimized := plan.CatalogOptimizer(e.catalog).OptimizeWithPruning(logical, e.catalog)
 
 	physCtx := &plan.PhysicalPlanContext{
 		Catalog: e.catalog,
@@ -216,7 +216,7 @@ func (e *Engine) executeSelectWithCTEs(query *parser.SelectQuery, cteTables map[
 		return nil, err
 	}
 
-	optimized := plan.CatalogOptimizer(e.catalog).OptimizeWithPruning(logical)
+	optimized := plan.CatalogOptimizer(e.catalog).OptimizeWithPruning(logical, e.catalog)
 
 	physCtx := &plan.PhysicalPlanContext{
 		Catalog: e.catalog,
@@ -477,14 +477,12 @@ func (e *Engine) addProjection(root plan.LogicalNode, sel *parser.SelectQuery) p
 		}
 		stripped := stripTableAlias(col)
 		columns = append(columns, stripped)
-		if i < len(sel.ColumnExprs) {
+		if i < len(sel.ColumnExprs) && sel.ColumnExprs[i] != nil {
 			columnExprs = append(columnExprs, sel.ColumnExprs[i])
+		} else if expr := e.makeFuncCallExpr(stripped, sel); expr != nil {
+			columnExprs = append(columnExprs, expr)
 		} else {
-			if expr := e.makeFuncCallExpr(stripped, sel); expr != nil {
-				columnExprs = append(columnExprs, expr)
-			} else {
-				columnExprs = append(columnExprs, nil)
-			}
+			columnExprs = append(columnExprs, nil)
 		}
 
 	}

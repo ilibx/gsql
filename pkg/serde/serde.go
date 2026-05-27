@@ -77,7 +77,7 @@ func Encode(ctx context.Context, format string, rows []Row, columns []catalog.Co
 	case "json":
 		return encodeJSON(w, rows)
 	case "excel", "xlsx":
-		return encodeExcel(w, rows, columns)
+		return encodeExcel(w, rows, columns, opts)
 	default:
 		return fmt.Errorf("unsupported format %q", format)
 	}
@@ -221,14 +221,22 @@ func decodeExcel(r io.Reader, columns []catalog.ColumnDef, opts CSVOptions) ([]R
 	return result, nil
 }
 
-func encodeExcel(w io.Writer, rows []Row, columns []catalog.ColumnDef) error {
+func encodeExcel(w io.Writer, rows []Row, columns []catalog.ColumnDef, opts CSVOptions) error {
 	f := excelize.NewFile()
 	defer f.Close()
 
 	sheet := "Sheet1"
+	rowOffset := 0
+	if opts.IncludeHeader {
+		for j, col := range columns {
+			cell, _ := excelize.CoordinatesToCellName(j+1, 1)
+			f.SetCellValue(sheet, cell, col.Name)
+		}
+		rowOffset = 1
+	}
 	for i, row := range rows {
 		for j, col := range columns {
-			cell, err := excelize.CoordinatesToCellName(j+1, i+1)
+			cell, err := excelize.CoordinatesToCellName(j+1, i+1+rowOffset)
 			if err != nil {
 				return err
 			}

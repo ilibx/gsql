@@ -65,7 +65,12 @@ func TestColumnPruning(t *testing.T) {
 	)
 
 	opt := DefaultOptimizer()
-	optimized := opt.OptimizeWithPruning(filter)
+	cat := catalog.NewCatalog()
+	cat.CreateTable(&catalog.Table{
+		Name:    "users",
+		Columns: []catalog.ColumnDef{{Name: "age", Type: "INT"}},
+	})
+	optimized := opt.OptimizeWithPruning(filter, cat)
 
 	// After pruning: Filter(age > 0) -> Project([age]) -> Scan(users)
 	if optimized.Type() != "LogicalFilter" {
@@ -96,8 +101,18 @@ func TestColumnPruningMultipleRefs(t *testing.T) {
 	)
 	sort := NewLogicalSort(agg, []parser.SortOrder{{Column: "id"}, {Column: "name", Desc: true}})
 
+	cat := catalog.NewCatalog()
+	cat.CreateTable(&catalog.Table{
+		Name:    "orders",
+		Columns: []catalog.ColumnDef{
+			{Name: "id", Type: "INT"},
+			{Name: "name", Type: "STRING"},
+			{Name: "amount", Type: "INT"},
+			{Name: "age", Type: "INT"},
+		},
+	})
 	opt := DefaultOptimizer()
-	optimized := opt.OptimizeWithPruning(sort)
+	optimized := opt.OptimizeWithPruning(sort, cat)
 
 	// Walk the tree to find the pruned Project above Scan
 	var hasPrunedProject bool
@@ -140,8 +155,13 @@ func TestMergeFilters(t *testing.T) {
 	innerFilter := NewLogicalFilter(NewLogicalScan("t", ""), condB)
 	outerFilter := NewLogicalFilter(innerFilter, condA)
 
+	cat := catalog.NewCatalog()
+	cat.CreateTable(&catalog.Table{
+		Name:    "t",
+		Columns: []catalog.ColumnDef{{Name: "a", Type: "INT"}, {Name: "b", Type: "INT"}},
+	})
 	opt := DefaultOptimizer()
-	optimized := opt.OptimizeWithPruning(outerFilter)
+	optimized := opt.OptimizeWithPruning(outerFilter, cat)
 
 	// After merge: Filter(A AND B) -> Project(cols) -> Scan
 	filter, ok := optimized.(*LogicalFilter)
