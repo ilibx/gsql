@@ -615,11 +615,12 @@ func (p *Parser) parsePartitionedBy() []string {
 func (p *Parser) parseColumnDefinitions() ([]ColumnDef, error) {
 	var columns []ColumnDef
 	for {
-		if p.cur.Type != IDENT {
+		if p.cur.Type != IDENT && p.cur.Type != STRING {
 			return nil, fmt.Errorf("expected column name, got %s", tokenName(p.cur.Type))
 		}
 		name := p.cur.Literal
-		if err := p.expectPeek(IDENT); err != nil {
+		p.nextToken()
+		if p.cur.Type != IDENT {
 			return nil, fmt.Errorf("expected column type after %s", name)
 		}
 		colType := p.cur.Literal
