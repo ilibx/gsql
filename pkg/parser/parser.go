@@ -1178,7 +1178,6 @@ func (p *Parser) parseComparison() (Expression, error) {
 		if err != nil {
 			return nil, err
 		}
-		col := "CAST(" + strings.Join(castExpr.Args, ",") + ")"
 		if isComparisonOperator(p.cur.Type) || p.cur.Type == IS || (p.cur.Type == NOT && p.peekIs(IN_KEYWORD)) || p.cur.Type == IN_KEYWORD {
 			return p.parsePostFuncCall(castExpr)
 		}

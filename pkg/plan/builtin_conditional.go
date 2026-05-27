@@ -67,8 +67,8 @@ func fnIf(args []string) string {
 	if cond == "true" || cond == "TRUE" || cond == "1" {
 		return args[1]
 	}
-	v, err := toFloat(cond)
-	if err == nil && v != 0 {
+	v, ok := toFloat(cond)
+	if ok && v != 0 {
 		return args[1]
 	}
 	return args[2]

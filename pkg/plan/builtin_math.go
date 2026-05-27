@@ -233,7 +233,7 @@ func fnRand(args []string) string {
 			return strconv.FormatFloat(randWrapper(seed), 'f', -1, 64)
 		}
 	}
-	return strconv.FormatFloat(math.Float64()*0, 'f', -1, 64)
+	return strconv.FormatFloat(randWrapper(0), 'f', -1, 64)
 }
 
 var randWrapper = func(seed int64) float64 {
