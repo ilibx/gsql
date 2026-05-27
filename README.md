@@ -563,6 +563,16 @@ Limit(5)
 go test ./...
 ```
 
+测试用例位于：
+
+| 路径 | 说明 |
+|------|------|
+| `tests/*.sql` | 端到端 SQL 测试（SELECT、JOIN、CTE、INSERT 等） |
+| `tests/functions/*.sql` | 函数 SQL 测试，覆盖全部 **123 个内置函数** |
+| `pkg/plan/builtin_test.go` | 函数 Go 单元测试 |
+| `pkg/parser/parser_test.go` | SQL 解析器测试 |
+| `pkg/storage/*_test.go` | 存储适配器测试 |
+
 ## 命令行选项
 
 ```bash

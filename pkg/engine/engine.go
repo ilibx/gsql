@@ -480,13 +480,13 @@ func (e *Engine) addProjection(root plan.LogicalNode, sel *parser.SelectQuery) p
 		if i < len(sel.ColumnExprs) {
 			columnExprs = append(columnExprs, sel.ColumnExprs[i])
 		} else {
-			// Check if this column looks like a scalar function call (e.g., "UPPER(name)")
 			if expr := e.makeFuncCallExpr(stripped, sel); expr != nil {
 				columnExprs = append(columnExprs, expr)
 			} else {
 				columnExprs = append(columnExprs, nil)
 			}
 		}
+
 	}
 
 	if sel.Distinct && len(columns) > 0 {
@@ -500,7 +500,9 @@ func (e *Engine) addProjection(root plan.LogicalNode, sel *parser.SelectQuery) p
 }
 
 // makeFuncCallExpr checks if a column key looks like a function call (e.g. "UPPER(name)")
-// and returns a FuncCallExpr if a matching scalar function is registered.
+// and returns a FuncCallExpr with all arguments resolved. For multi-arg functions
+// like IF(1,'true','false'), the colKey only encodes the first arg ("IF(1)"), so the
+// full args are reconstructed from sel.Aggregates.
 func (e *Engine) makeFuncCallExpr(col string, sel *parser.SelectQuery) parser.Expression {
 	idx := strings.Index(col, "(")
 	if idx <= 0 || !strings.HasSuffix(col, ")") {
@@ -510,6 +512,12 @@ func (e *Engine) makeFuncCallExpr(col string, sel *parser.SelectQuery) parser.Ex
 	fn, ok := plan.LookupFunc(funcName)
 	if !ok || fn.Type != plan.FuncScalar {
 		return nil
+	}
+	// Prefer full args from sel.Aggregates (handles multi-arg scalar functions)
+	for _, a := range sel.Aggregates {
+		if a.FuncName == funcName && len(a.Args) > 1 {
+			return &parser.FuncCallExpr{FuncName: funcName, Args: a.Args}
+		}
 	}
 	inner := col[idx+1 : len(col)-1]
 	var args []string
@@ -571,6 +579,10 @@ func stripTableAlias(col string) string {
 	// strip table alias from qualified name: "u.name" -> "name"
 	// only if the dot is not inside a function call
 	if idx := strings.IndexByte(col, '.'); idx >= 0 {
+		// check if this is a decimal number literal (digit.digit)
+		if idx > 0 && idx+1 < len(col) && col[idx-1] >= '0' && col[idx-1] <= '9' && col[idx+1] >= '0' && col[idx+1] <= '9' {
+			return col
+		}
 		parenIdx := strings.IndexByte(col, '(')
 		if parenIdx == -1 || idx < parenIdx {
 			return col[idx+1:]
@@ -581,6 +593,10 @@ func stripTableAlias(col string) string {
 		funcName := col[:idx]
 		arg := col[idx+1 : len(col)-1]
 		if argIdx := strings.IndexByte(arg, '.'); argIdx >= 0 {
+			// check if this is a decimal number within the arg
+			if argIdx > 0 && argIdx+1 < len(arg) && arg[argIdx-1] >= '0' && arg[argIdx-1] <= '9' && arg[argIdx+1] >= '0' && arg[argIdx+1] <= '9' {
+				return col
+			}
 			return funcName + "(" + arg[argIdx+1:] + ")"
 		}
 	}

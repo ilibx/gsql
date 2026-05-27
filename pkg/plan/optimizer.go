@@ -223,6 +223,11 @@ func collectColumnRefs(node LogicalNode, cols map[string]bool) {
 			if a.Column != "" && a.Column != "*" {
 				cols[a.Column] = true
 			}
+			for _, arg := range a.Args {
+				if arg != "" && arg != "*" {
+					cols[arg] = true
+				}
+			}
 		}
 	case *LogicalJoin:
 		if n.LeftColumn != "" {

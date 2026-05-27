@@ -255,7 +255,7 @@ func aggCorr(rows []storage.Row, column string, _ bool, args []string) string {
 	} else {
 		return "0"
 	}
-	n := 0
+	var n int
 	var sumX, sumY, sumXY, sumX2, sumY2 float64
 	for _, row := range rows {
 		x, errX := strconv.ParseFloat(row[col1], 64)

@@ -1140,7 +1140,11 @@ func computePartitionWindow(rows []storage.Row, windowExprs []parser.WindowExpr)
 		if w.FuncName == "" {
 			continue
 		}
-		colKey := w.FuncName + "(" + strings.Join(w.Args, ",") + ")"
+		argStr := ""
+		if len(w.Args) > 0 {
+			argStr = w.Args[0]
+		}
+		colKey := w.FuncName + "(" + argStr + ")"
 		switch w.FuncName {
 		case "COUNT":
 			computeWindowAggFrame(rows, colKey, w.Args, "COUNT", w.Frame, w.OrderBy)
