@@ -518,7 +518,11 @@ func (e *Engine) makeFuncCallExpr(col string, sel *parser.SelectQuery) parser.Ex
 		colArg0 = strings.TrimSpace(inner[:commaIdx])
 	}
 	for _, a := range sel.Aggregates {
-		if a.FuncName == funcName && a.Column == colArg0 && len(a.Args) > 1 {
+		if a.FuncName != funcName || len(a.Args) <= 1 {
+			continue
+		}
+		// Try full-match first (handles commas inside string literals)
+		if a.Column == inner || a.Column == colArg0 {
 			return &parser.FuncCallExpr{FuncName: funcName, Args: a.Args}
 		}
 	}

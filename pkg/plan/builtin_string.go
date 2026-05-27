@@ -3,6 +3,7 @@ package plan
 import (
 	"strconv"
 	"strings"
+	"unicode"
 )
 
 func registerStringBuiltins() {
@@ -220,7 +221,8 @@ func fnInstr(args []string) string {
 	if len(args) < 2 {
 		return "0"
 	}
-	return fnLocate(args)
+	// INSTR(str, substr) 参数顺序与 LOCATE(substr, str) 相反
+	return fnLocate([]string{args[1], args[0]})
 }
 
 func fnLpad(args []string) string {
@@ -263,7 +265,21 @@ func fnInitcap(args []string) string {
 	if len(s) == 0 {
 		return s
 	}
-	return strings.ToUpper(s[:1]) + strings.ToLower(s[1:])
+	var b strings.Builder
+	b.Grow(len(s))
+	nextCap := true
+	for _, r := range s {
+		if r == ' ' || r == '\t' || r == '\n' || r == '_' || r == '-' {
+			nextCap = true
+			b.WriteRune(r)
+		} else if nextCap {
+			b.WriteRune(unicode.ToUpper(r))
+			nextCap = false
+		} else {
+			b.WriteRune(unicode.ToLower(r))
+		}
+	}
+	return b.String()
 }
 
 func fnAscii(args []string) string {
