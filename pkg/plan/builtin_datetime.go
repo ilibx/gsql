@@ -16,7 +16,7 @@ func registerDateTimeBuiltins() {
 		ScalarFn: fnCurrentTimestamp,
 	})
 	RegisterFunc(&FuncDef{
-		Name: "UNIX_TIMESTAMP", Type: FuncScalar, MinArgs: 0, MaxArgs: 1,
+		Name: "UNIX_TIMESTAMP", Type: FuncScalar, MinArgs: 0, MaxArgs: 2,
 		ScalarFn: fnUnixTimestamp,
 	})
 	RegisterFunc(&FuncDef{
@@ -144,6 +144,13 @@ func fnCurrentTimestamp([]string) string {
 func fnUnixTimestamp(args []string) string {
 	if len(args) == 0 {
 		return strconv.FormatInt(now().Unix(), 10)
+	}
+	if len(args) >= 2 {
+		t, err := time.Parse(hiveFmtToGo(args[1]), args[0])
+		if err != nil {
+			return "0"
+		}
+		return strconv.FormatInt(t.Unix(), 10)
 	}
 	t, ok := parseDate(args[0])
 	if !ok {
