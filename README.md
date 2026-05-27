@@ -53,11 +53,12 @@ gsql 拥有以下核心层次：
 - `HAVING` 子句（支持聚合结果过滤）
 - `ORDER BY`（支持多列排序）
 - `LIMIT`
-- `INSERT OVERWRITE TABLE ... SELECT ...` 覆盖写入目标表
-- `INSERT INTO TABLE ... SELECT ...` 追加数据到已有 CSV/JSON 文件
+- 支持 `INSERT OVERWRITE TABLE ... SELECT ...` 覆盖写入目标表
+- 支持 `INSERT INTO TABLE ... SELECT ...` 追加数据到已有 CSV/JSON 文件
+- 写入支持 CSV / JSON / Excel (.xlsx) 格式
 - `PARTITIONED BY (col1, col2, ...)` 分区表定义，写入时自动按分区列值写入子目录
 - 分区表读取时自动从目录路径注入分区列值，支持等值和范围（`>`, `<`, `>=`, `<=`）分区裁剪，自动识别 `col=value` 和裸值两种目录格式
-- 本地 `CSV` / `JSON` 数据读取与写入
+- 支持本地 `CSV` / `JSON` / `Excel (.xlsx)` 数据读取与写入
 - CSV 选项：`delimiter`（分隔符）、`skip_lines`（读取时跳过行首 N 行）、`include_header`（写入时输出表头）、`quote_char`、`escape_char`
 - `INSERT INTO` 追加数据时自动合并已有文件内容
 - **云存储与远程数据源支持**：
@@ -264,6 +265,30 @@ SELECT 2 AS id, 'Bob' AS name;
 --         2|Bob
 ```
 
+### Excel 格式
+
+```sql
+CREATE TABLE excel_data (
+  id INT,
+  name STRING,
+  score INT
+)
+WITH (
+  storage = 'local',
+  format = 'excel',               -- 或 'xlsx'
+  location = '/tmp/excel_data',
+  file_name = 'result.xlsx'
+);
+
+INSERT OVERWRITE TABLE excel_data
+SELECT 1 AS id, 'Alice' AS name, 95 AS score
+UNION ALL
+SELECT 2, 'Bob', 87;
+
+-- 读取 Excel 文件
+SELECT * FROM excel_data;
+```
+
 ### S3 / S3兼容服务
 
 支持两种配置方式：
@@ -433,6 +458,7 @@ Lark 配置参数：
 | `folder` / `lark_folder` | 根文件夹名称（推荐）。自动在网盘根目录创建或查找，无需指定 `parent_token` |
 | `root_token` / `lark_root_token` | 根文件夹 token（与 `folder` 二选一）。设为空字符串 `''` 表示使用应用根目录 |
 | `chat_id` / `lark_chat_id` | 群聊 ID（可选）。配置后：1) 写入文件时自动授予群聊完全权限 2) 新创建的目录自动授予该群聊完全管理权限 |
+| `format` | 支持 `csv`、`json`、`excel` / `xlsx` |
 
 **自动授权**：当 `chat_id` 配置后，机器人每次创建新目录或写入文件时，会自动调用 Lark Drive 权限 API 将该群聊添加为 `full_access` 成员，确保群聊可管理目录及其中文件。也可通过 `lark://` URL 方式配置：
 
@@ -570,7 +596,7 @@ gsql 支持多种存储后端，提供两种配置方式：
 
 | 存储类型 | 说明 | 配置参数 |
 |---------|------|---------|
-| `local` | 本地文件系统（支持分区表目录结构自动检测） | `location`, `file_pattern`, `file_name`, `partition_format` |
+| `local` | 本地文件系统（支持分区表目录结构自动检测） | `location`, `file_pattern`, `file_name`, `partition_format`, `format`（支持 csv/json/excel/xlsx） |
 | `s3` | AWS S3 或 S3兼容服务 | `bucket`, `region`, `prefix`, `endpoint`(可选), `access_key`(可选), `access_secret`(可选), `use_path_style`(可选), `retry_mode`(可选) |
 | `ftp` | FTP 服务器 | `host`, `port`(默认21), `username`, `password`, `path` |
 | `sftp` | SFTP 服务器 | `host`, `port`(默认22), `username`, `password`, `path` |

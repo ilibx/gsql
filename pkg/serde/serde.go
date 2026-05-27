@@ -2,6 +2,7 @@ package serde
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/csv"
 	"encoding/json"
@@ -11,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/ilibx/gsql/pkg/catalog"
+	"github.com/xuri/excelize/v2"
 )
 
 type Row map[string]string
@@ -58,6 +60,8 @@ func Decode(ctx context.Context, format string, r io.Reader, columns []catalog.C
 		return decodeCSV(r, columns, opts)
 	case "json":
 		return decodeJSON(r, columns)
+	case "excel", "xlsx":
+		return decodeExcel(r, columns, opts)
 	default:
 		return nil, fmt.Errorf("unsupported format %q", format)
 	}
@@ -72,6 +76,8 @@ func Encode(ctx context.Context, format string, rows []Row, columns []catalog.Co
 		return encodeCSV(w, rows, columns, opts)
 	case "json":
 		return encodeJSON(w, rows)
+	case "excel", "xlsx":
+		return encodeExcel(w, rows, columns)
 	default:
 		return fmt.Errorf("unsupported format %q", format)
 	}
@@ -178,4 +184,58 @@ func encodeJSON(w io.Writer, rows []Row) error {
 		}
 	}
 	return nil
+}
+
+func decodeExcel(r io.Reader, columns []catalog.ColumnDef, opts CSVOptions) ([]Row, error) {
+	data, err := io.ReadAll(r)
+	if err != nil {
+		return nil, err
+	}
+	f, err := excelize.OpenReader(bytes.NewReader(data))
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	sheet := f.GetSheetName(0)
+	rows, err := f.GetRows(sheet)
+	if err != nil {
+		return nil, err
+	}
+
+	var result []Row
+	for idx, row := range rows {
+		if idx < opts.SkipHeaderLines {
+			continue
+		}
+		r := make(Row)
+		for i, col := range columns {
+			if i < len(row) {
+				r[col.Name] = row[i]
+			} else {
+				r[col.Name] = ""
+			}
+		}
+		result = append(result, r)
+	}
+	return result, nil
+}
+
+func encodeExcel(w io.Writer, rows []Row, columns []catalog.ColumnDef) error {
+	f := excelize.NewFile()
+	defer f.Close()
+
+	sheet := "Sheet1"
+	for i, row := range rows {
+		for j, col := range columns {
+			cell, err := excelize.CoordinatesToCellName(j+1, i+1)
+			if err != nil {
+				return err
+			}
+			if err := f.SetCellValue(sheet, cell, row[col.Name]); err != nil {
+				return err
+			}
+		}
+	}
+	return f.Write(w)
 }

@@ -58,7 +58,19 @@ func readTable(store Storage, tbl *catalog.Table, filters []PartitionFilter) ([]
 
 	pattern := tbl.Option("file_pattern", "")
 	if pattern == "" {
-		pattern = tbl.Option("file_name", "*")
+		pattern = tbl.Option("file_name", "")
+	}
+	if pattern == "" {
+		switch format {
+		case "csv":
+			pattern = "*.csv"
+		case "json":
+			pattern = "*.json"
+		case "excel", "xlsx":
+			pattern = "*.xlsx"
+		default:
+			pattern = "*"
+		}
 	}
 
 	var partitions []partitionFile
@@ -104,6 +116,8 @@ func readTable(store Storage, tbl *catalog.Table, filters []PartitionFilter) ([]
 				fileRows, readErr = readCSV(store, pf.Path, tbl.Columns, csvOpts)
 			case "json":
 				fileRows, readErr = readJSON(store, pf.Path, tbl.Columns)
+			case "excel", "xlsx":
+				fileRows, readErr = readExcel(store, pf.Path, tbl.Columns, csvOpts)
 			default:
 				resultCh <- fileResult{err: fmt.Errorf("unsupported format %q", format)}
 				return
@@ -347,6 +361,17 @@ func readJSON(store Storage, path string, columns []catalog.ColumnDef) ([]Row, e
 	return serde.Decode(ctx, "json", file, columns, serde.CSVOptions{})
 }
 
+func readExcel(store Storage, path string, columns []catalog.ColumnDef, csvOpts serde.CSVOptions) ([]Row, error) {
+	ctx := context.Background()
+	file, err := store.Open(ctx, path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	return serde.Decode(ctx, "excel", file, columns, csvOpts)
+}
+
 func WriteRows(tbl *catalog.Table, rows []Row, appendMode bool) error {
 	store, err := GetStorage(tbl)
 	if err != nil {
@@ -357,8 +382,12 @@ func WriteRows(tbl *catalog.Table, rows []Row, appendMode bool) error {
 
 func writeTable(store Storage, tbl *catalog.Table, rows []Row, appendMode bool) error {
 	ctx := context.Background()
-	outputFile := tbl.Option("file_name", "result.csv")
 	format := strings.ToLower(tbl.Option("format", "csv"))
+	defaultName := "result.csv"
+	if format == "excel" || format == "xlsx" {
+		defaultName = "result.xlsx"
+	}
+	outputFile := tbl.Option("file_name", defaultName)
 
 	csvOpts := serde.NewCSVOptions(tbl)
 

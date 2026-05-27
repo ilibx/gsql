@@ -34,7 +34,9 @@ const (
 	larkUpdateAPI  = "/open-apis/drive/v1/files/%s"
 	larkMetaAPI    = "/open-apis/drive/v1/metas/batch_query"
 	larkRootFolderMetaAPI = "/open-apis/drive/explorer/v2/root_folder/meta"
-
+	larkExportCreateAPI   = "/open-apis/drive/v1/export_tasks"
+	larkExportGetAPI      = "/open-apis/drive/v1/export_tasks/%s"
+	larkExportDownloadAPI = "/open-apis/drive/v1/export_tasks/file/%s/download"
 
 	larkAuthTTL     = 90 * time.Minute
 	larkHTTPTimeout = 30 * time.Second
@@ -293,6 +295,9 @@ func (s *larkStorage) doGet(ctx context.Context, apiURL string) ([]byte, error) 
 	if err != nil {
 		return nil, err
 	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("lark API %s returned status %d: %s", apiURL, resp.StatusCode, strings.TrimSpace(string(data)))
+	}
 	return data, nil
 }
 
@@ -415,6 +420,26 @@ type larkUploadResp struct {
 	} `json:"data"`
 }
 
+type larkExportCreateResp struct {
+	Code int    `json:"code"`
+	Msg  string `json:"msg"`
+	Data struct {
+		Ticket string `json:"ticket"`
+	} `json:"data"`
+}
+
+type larkExportStatusResp struct {
+	Code int    `json:"code"`
+	Msg  string `json:"msg"`
+	Data struct {
+		Result struct {
+			FileToken   string `json:"file_token"`
+			JobStatus   int    `json:"job_status"`
+			JobErrorMsg string `json:"job_error_msg"`
+		} `json:"result"`
+	} `json:"data"`
+}
+
 // ---- path resolution ----
 
 func (s *larkStorage) listDir(ctx context.Context, parentToken string) ([]larkFileEntry, error) {
@@ -445,17 +470,17 @@ func (s *larkStorage) listDir(ctx context.Context, parentToken string) ([]larkFi
 	return all, nil
 }
 
-func (s *larkStorage) resolveChildToken(ctx context.Context, parentToken, childName string) (string, bool, error) {
+func (s *larkStorage) resolveChildToken(ctx context.Context, parentToken, childName string) (string, bool, string, error) {
 	entries, err := s.listDir(ctx, parentToken)
 	if err != nil {
-		return "", false, err
+		return "", false, "", err
 	}
 	for _, e := range entries {
 		if e.Name == childName {
-			return e.Token, e.Type == "folder", nil
+			return e.Token, e.Type == "folder", e.Type, nil
 		}
 	}
-	return "", false, nil
+	return "", false, "", os.ErrNotExist
 }
 
 func (s *larkStorage) getFileMeta(ctx context.Context, token string) (*larkFileEntry, error) {
@@ -513,9 +538,9 @@ func (s *larkStorage) resolvePath(ctx context.Context, name string) (token strin
 	parts := strings.Split(name, "/")
 	currentToken := rootToken
 	for i, part := range parts {
-		t, isDir, err := s.resolveChildToken(ctx, currentToken, part)
+		t, isDir, _, err := s.resolveChildToken(ctx, currentToken, part)
 		if err != nil {
-			return "", false, err
+			return "", false, fmt.Errorf("path %q not found at %q: %w", name, strings.Join(parts[:i+1], "/"), err)
 		}
 		if t == "" {
 			return "", false, fmt.Errorf("path %q not found at %q", name, strings.Join(parts[:i+1], "/"))
@@ -570,7 +595,7 @@ func (s *larkStorage) grantFullAccess(ctx context.Context, token, tokenType stri
 }
 
 func (s *larkStorage) ensureFolder(ctx context.Context, parentToken, name string) (string, error) {
-	t, isDir, err := s.resolveChildToken(ctx, parentToken, name)
+	t, isDir, _, err := s.resolveChildToken(ctx, parentToken, name)
 	if err != nil {
 		return "", err
 	}
@@ -636,26 +661,49 @@ func (s *larkStorage) Open(ctx context.Context, name string) (File, error) {
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
 	}
-	token, _, err := s.resolvePath(ctx, name)
+	if len(name) == 0 {
+		return nil, fmt.Errorf("empty file name")
+	}
+	token, isDir, err := s.resolvePath(ctx, name)
 	if err != nil {
 		return nil, err
 	}
-	u := fmt.Sprintf("%s%s/%s/download", larkBaseURL, larkDriveAPI, token)
-	data, err := s.doGet(ctx, u)
+	if isDir {
+		return nil, fmt.Errorf("%q is a folder, not a file", name)
+	}
 	if err != nil {
 		return nil, err
 	}
-	var resp struct {
-		Code int    `json:"code"`
-		Msg  string `json:"msg"`
-		Data struct {
-			FileToken string `json:"file_token"`
-			FileName  string `json:"file_name"`
-			Size      int    `json:"size"`
-		} `json:"data"`
+
+	entryType, err := s.lookupEntryType(ctx, name)
+	if err != nil {
+		return nil, err
 	}
-	if err := json.Unmarshal(data, &resp); err == nil && resp.Code != 0 {
-		return nil, fmt.Errorf("lark download error code %d: %s", resp.Code, resp.Msg)
+
+	var data []byte
+	if entryType == "file" {
+		u := fmt.Sprintf("%s%s/%s/download", larkBaseURL, larkDriveAPI, token)
+		data, err = s.doGet(ctx, u)
+		if err != nil {
+			return nil, err
+		}
+		var resp struct {
+			Code int    `json:"code"`
+			Msg  string `json:"msg"`
+			Data struct {
+				FileToken string `json:"file_token"`
+				FileName  string `json:"file_name"`
+				Size      int    `json:"size"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal(data, &resp); err == nil && resp.Code != 0 {
+			return nil, fmt.Errorf("lark download error code %d: %s", resp.Code, resp.Msg)
+		}
+	} else {
+		data, err = s.downloadViaExport(ctx, token, entryType)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	return &larkReadFile{
@@ -666,20 +714,101 @@ func (s *larkStorage) Open(ctx context.Context, name string) (File, error) {
 	}, nil
 }
 
+// lookupEntryType returns the Lark entry type ("file", "sheet", "doc", etc.) for the given path.
+func (s *larkStorage) lookupEntryType(ctx context.Context, name string) (string, error) {
+	name = strings.TrimPrefix(name, "/")
+	name = strings.TrimSuffix(name, "/")
+	dir, file := path.Split(name)
+	var parentToken string
+	var err error
+	if dir == "" {
+		parentToken, err = s.root(ctx)
+	} else {
+		parentToken, _, err = s.resolvePath(ctx, dir)
+	}
+	if err != nil {
+		return "", err
+	}
+	_, _, entryType, err := s.resolveChildToken(ctx, parentToken, file)
+	if err != nil {
+		return "", err
+	}
+	return entryType, nil
+}
+
+// downloadViaExport uses the Lark export API to download non-file type entries
+// (e.g., sheets, docs, bitables) as a file.
+func (s *larkStorage) downloadViaExport(ctx context.Context, token, entryType string) ([]byte, error) {
+	fileExt := "xlsx"
+
+	body, _ := json.Marshal(map[string]string{
+		"file_extension": fileExt,
+		"token":          token,
+		"type":           entryType,
+	})
+	data, err := s.doPost(ctx, larkBaseURL+larkExportCreateAPI, "application/json", bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("create export task failed: %w", err)
+	}
+	var createResp larkExportCreateResp
+	if err := json.Unmarshal(data, &createResp); err != nil {
+		return nil, fmt.Errorf("create export decode failed: %w", err)
+	}
+	if createResp.Code != 0 {
+		return nil, fmt.Errorf("create export error code %d: %s", createResp.Code, createResp.Msg)
+	}
+
+	ticket := createResp.Data.Ticket
+	pollURL := fmt.Sprintf(larkBaseURL+larkExportGetAPI, ticket) + "?token=" + token
+
+	for {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(2 * time.Second):
+		}
+
+		respData, err := s.doGet(ctx, pollURL)
+		if err != nil {
+			return nil, fmt.Errorf("query export task failed: %w", err)
+		}
+		var statusResp larkExportStatusResp
+		if err := json.Unmarshal(respData, &statusResp); err != nil {
+			return nil, fmt.Errorf("query export decode failed: %w", err)
+		}
+		if statusResp.Code != 0 {
+			return nil, fmt.Errorf("query export error code %d: %s", statusResp.Code, statusResp.Msg)
+		}
+		switch statusResp.Data.Result.JobStatus {
+		case 0:
+			fileToken := statusResp.Data.Result.FileToken
+			if fileToken == "" {
+				return nil, fmt.Errorf("export succeeded but file token is empty, raw response: %s", string(respData))
+			}
+			u := fmt.Sprintf(larkBaseURL+larkExportDownloadAPI, fileToken)
+			downloadData, err := s.doGet(ctx, u)
+			if err != nil {
+				return nil, fmt.Errorf("download exported file failed: %w", err)
+			}
+			return downloadData, nil
+		case 1:
+			continue
+		case 2:
+			return nil, fmt.Errorf("export failed: %s", statusResp.Data.Result.JobErrorMsg)
+		}
+	}
+}
+
 func (s *larkStorage) Stat(ctx context.Context, name string) (FileInfo, error) {
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
 	}
-	token, isDir, err := s.resolvePath(ctx, name)
-	if err != nil {
-		return nil, err
-	}
-	meta, err := s.getFileMeta(ctx, token)
+	_, isDir, err := s.resolvePath(ctx, name)
 	if err != nil {
 		return nil, err
 	}
 	return &baseFileInfo{
-		name:  meta.Name,
+		name:  name,
 		path:  name,
 		size:  0,
 		isDir: isDir,
@@ -863,7 +992,7 @@ func (s *larkStorage) WriteFile(ctx context.Context, name string, data []byte, p
 	}
 
 	// Delete existing file with the same name to avoid duplicates in Lark Drive
-	if token, isDir, derr := s.resolveChildToken(ctx, parentToken, fileName); derr == nil && !isDir {
+	if token, isDir, _, derr := s.resolveChildToken(ctx, parentToken, fileName); derr == nil && !isDir {
 		if rerr := s.RemoveByToken(ctx, token, "file"); rerr != nil {
 			fmt.Fprintf(os.Stderr, "WARNING: remove existing file %s failed: %v\n", fileName, rerr)
 		}

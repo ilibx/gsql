@@ -1208,14 +1208,21 @@ func TestEngineInsertInto(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read target dir failed: %v", err)
 	}
-	appendFiles := 0
-	for _, e := range entries {
-		if strings.HasPrefix(e.Name(), "append_") {
-			appendFiles++
-		}
+	// Should have 1 merged file
+	if len(entries) != 1 || entries[0].Name() != "result.csv" {
+		t.Errorf("expected 1 result.csv file, got %d files", len(entries))
 	}
-	if appendFiles != 2 {
-		t.Errorf("expected 2 append files, got %d", appendFiles)
+	// Verify content has both rows
+	data, err := os.ReadFile(filepath.Join(targetDir, "result.csv"))
+	if err != nil {
+		t.Fatalf("read result.csv failed: %v", err)
+	}
+	content := string(data)
+	if !strings.Contains(content, "1") || !strings.Contains(content, "alice") {
+		t.Errorf("missing row1 in output: %s", content)
+	}
+	if !strings.Contains(content, "2") || !strings.Contains(content, "bob") {
+		t.Errorf("missing row2 in output: %s", content)
 	}
 }
 
