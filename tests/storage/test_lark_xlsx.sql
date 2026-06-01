@@ -7,11 +7,11 @@ CREATE TABLE lark_data (
 )
 WITH (
   storage = 'lark',
-  app_id = 'cli_aa9959399e15',
-  app_secret = 'gmZTJjINIbczgViZqt7LJ',
-  folder = 'gsql-data',     
-  chat_id = 'oc_940336076ab6811540',
-  format = 'excel',
+  app_id = 'cli_aa99536cb9399e15',
+  app_secret = 'rP6M4o9L12EXySohRfHbXch06KcVRmH2',
+  path = 'gsql-data',     
+  chat_id = 'oc_94033dd71120221b4696076ab6811540',
+  format = 'xlsx',
   include_header = 'true',
   skip_lines = "1",
   file_name = '供应商-客户'

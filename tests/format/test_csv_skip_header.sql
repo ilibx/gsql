@@ -7,7 +7,7 @@ CREATE TABLE header_scores (
 WITH (
   storage = 'local',
   format = 'csv',
-  location = 'samples/csv_opts',
+  path = 'samples/csv_opts',
   file_pattern = 'with_header.csv',
   delimiter = '|',
   skip_lines = '2'

@@ -8,7 +8,7 @@ CREATE TABLE users (
 WITH (
   storage = 'local',
   format = 'csv',
-  location = 'samples/users',
+  path = 'samples/users',
   file_pattern = '*.csv'
 );
 
@@ -22,7 +22,7 @@ CREATE TABLE products (
 WITH (
   storage = 'local',
   format = 'csv',
-  location = 'samples/products',
+  path = 'samples/products',
   file_pattern = '*.csv'
 );
 
@@ -37,7 +37,7 @@ CREATE TABLE orders (
 WITH (
   storage = 'local',
   format = 'csv',
-  location = 'samples/orders',
+  path = 'samples/orders',
   file_pattern = 'data.csv'
 )
 PARTITIONED BY (year, month);
@@ -53,7 +53,7 @@ CREATE TABLE partitioned_orders (
 WITH (
   storage = 'local',
   format = 'csv',
-  location = 'samples/orders',
+  path = 'samples/orders',
   file_pattern = 'data.csv'
 )
 PARTITIONED BY (year, month);

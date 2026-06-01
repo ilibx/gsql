@@ -49,7 +49,7 @@ func TestEngineSelectFromLocalCSV(t *testing.T) {
 		WithOptions: map[string]string{
 			"storage":      "local",
 			"format":       "csv",
-			"location":     dir,
+			"path":     dir,
 			"file_pattern": "*.csv",
 		},
 	}
@@ -92,7 +92,7 @@ func TestEngineSelectWithCTE(t *testing.T) {
 		WithOptions: map[string]string{
 			"storage":      "local",
 			"format":       "csv",
-			"location":     dir,
+			"path":     dir,
 			"file_pattern": "*.csv",
 		},
 	}
@@ -145,7 +145,7 @@ func TestEngineSelectWithLikePredicate(t *testing.T) {
 		WithOptions: map[string]string{
 			"storage":      "local",
 			"format":       "csv",
-			"location":     dir,
+			"path":     dir,
 			"file_pattern": "*.csv",
 		},
 	}
@@ -189,7 +189,7 @@ func TestEngineSelectWithAndOrWhere(t *testing.T) {
 		WithOptions: map[string]string{
 			"storage":      "local",
 			"format":       "csv",
-			"location":     dir,
+			"path":     dir,
 			"file_pattern": "*.csv",
 		},
 	}
@@ -237,7 +237,7 @@ func TestEngineSelectGroupByCount(t *testing.T) {
 		WithOptions: map[string]string{
 			"storage":      "local",
 			"format":       "csv",
-			"location":     dir,
+			"path":     dir,
 			"file_pattern": "*.csv",
 		},
 	}
@@ -285,7 +285,7 @@ func TestEngineSelectAggregateSumAvg(t *testing.T) {
 		WithOptions: map[string]string{
 			"storage":      "local",
 			"format":       "csv",
-			"location":     dir,
+			"path":     dir,
 			"file_pattern": "*.csv",
 		},
 	}
@@ -332,7 +332,7 @@ func TestEngineSelectGroupByWithFilter(t *testing.T) {
 		WithOptions: map[string]string{
 			"storage":      "local",
 			"format":       "csv",
-			"location":     dir,
+			"path":     dir,
 			"file_pattern": "*.csv",
 		},
 	}
@@ -382,7 +382,7 @@ func TestEngineSelectHaving(t *testing.T) {
 		WithOptions: map[string]string{
 			"storage":      "local",
 			"format":       "csv",
-			"location":     dir,
+			"path":     dir,
 			"file_pattern": "*.csv",
 		},
 	}
@@ -431,7 +431,7 @@ func TestEngineSelectFromSubquery(t *testing.T) {
 		WithOptions: map[string]string{
 			"storage":      "local",
 			"format":       "csv",
-			"location":     dir,
+			"path":     dir,
 			"file_pattern": "*.csv",
 		},
 	}
@@ -478,7 +478,7 @@ func TestEngineSelectSubqueryWithWhere(t *testing.T) {
 		WithOptions: map[string]string{
 			"storage":      "local",
 			"format":       "csv",
-			"location":     dir,
+			"path":     dir,
 			"file_pattern": "*.csv",
 		},
 	}
@@ -533,7 +533,7 @@ func TestEngineJoin(t *testing.T) {
 		WithOptions: map[string]string{
 			"storage":      "local",
 			"format":       "csv",
-			"location":     dir,
+			"path":     dir,
 			"file_pattern": "users.csv",
 		},
 	}
@@ -551,7 +551,7 @@ func TestEngineJoin(t *testing.T) {
 		WithOptions: map[string]string{
 			"storage":      "local",
 			"format":       "csv",
-			"location":     dir,
+			"path":     dir,
 			"file_pattern": "orders.csv",
 		},
 	}
@@ -620,7 +620,7 @@ func TestEngineJoinWithWhere(t *testing.T) {
 		WithOptions: map[string]string{
 			"storage":      "local",
 			"format":       "csv",
-			"location":     dir,
+			"path":     dir,
 			"file_pattern": "users.csv",
 		},
 	}
@@ -637,7 +637,7 @@ func TestEngineJoinWithWhere(t *testing.T) {
 		WithOptions: map[string]string{
 			"storage":      "local",
 			"format":       "csv",
-			"location":     dir,
+			"path":     dir,
 			"file_pattern": "orders.csv",
 		},
 	}
@@ -684,7 +684,7 @@ func TestEngineInsertOverwriteTable(t *testing.T) {
 		WithOptions: map[string]string{
 			"storage":      "local",
 			"format":       "csv",
-			"location":     dir,
+			"path":     dir,
 			"file_pattern": "users.csv",
 		},
 	}
@@ -702,7 +702,7 @@ func TestEngineInsertOverwriteTable(t *testing.T) {
 		WithOptions: map[string]string{
 			"storage":   "local",
 			"format":    "csv",
-			"location":  targetDir,
+			"path":  targetDir,
 			"file_name": "result.csv",
 		},
 	}
@@ -749,7 +749,7 @@ func TestEngineEmptyCSV(t *testing.T) {
 		WithOptions: map[string]string{
 			"storage":      "local",
 			"format":       "csv",
-			"location":     dir,
+			"path":     dir,
 			"file_pattern": "empty.csv",
 		},
 	}
@@ -789,7 +789,7 @@ func TestEngineCSVWithEmptyFields(t *testing.T) {
 		WithOptions: map[string]string{
 			"storage":      "local",
 			"format":       "csv",
-			"location":     dir,
+			"path":     dir,
 			"file_pattern": "data.csv",
 		},
 	}
@@ -835,7 +835,7 @@ func TestEngineCSVWithQuotedFields(t *testing.T) {
 		WithOptions: map[string]string{
 			"storage":      "local",
 			"format":       "csv",
-			"location":     dir,
+			"path":     dir,
 			"file_pattern": "data.csv",
 		},
 	}
@@ -881,7 +881,7 @@ func TestEngineCSVMissingColumns(t *testing.T) {
 		WithOptions: map[string]string{
 			"storage":      "local",
 			"format":       "csv",
-			"location":     dir,
+			"path":     dir,
 			"file_pattern": "data.csv",
 		},
 	}
@@ -928,7 +928,7 @@ func TestEngineTableAliasedJoin(t *testing.T) {
 		WithOptions: map[string]string{
 			"storage":      "local",
 			"format":       "csv",
-			"location":     dir,
+			"path":     dir,
 			"file_pattern": "users.csv",
 		},
 	}
@@ -945,7 +945,7 @@ func TestEngineTableAliasedJoin(t *testing.T) {
 		WithOptions: map[string]string{
 			"storage":      "local",
 			"format":       "csv",
-			"location":     dir,
+			"path":     dir,
 			"file_pattern": "orders.csv",
 		},
 	}
@@ -998,7 +998,7 @@ func TestEngineColumnAliasOrderBy(t *testing.T) {
 		WithOptions: map[string]string{
 			"storage":      "local",
 			"format":       "csv",
-			"location":     dir,
+			"path":     dir,
 			"file_pattern": "users.csv",
 		},
 	}
@@ -1039,7 +1039,7 @@ func TestEngineWindowRowNumber(t *testing.T) {
 		WithOptions: map[string]string{
 			"storage":       "local",
 			"format":        "csv",
-			"location":      dir,
+			"path":      dir,
 			"file_pattern":  "users.csv",
 		},
 	}); err != nil {
@@ -1087,7 +1087,7 @@ func TestEngineInsertOverwritePartitionedTable(t *testing.T) {
 		WithOptions: map[string]string{
 			"storage":      "local",
 			"format":       "csv",
-			"location":     dir,
+			"path":     dir,
 			"file_pattern": "events.csv",
 		},
 	}
@@ -1107,7 +1107,7 @@ func TestEngineInsertOverwritePartitionedTable(t *testing.T) {
 		WithOptions: map[string]string{
 			"storage":   "local",
 			"format":    "csv",
-			"location":  targetDir,
+			"path":  targetDir,
 			"file_name": "data.csv",
 		},
 	}
@@ -1163,7 +1163,7 @@ func TestEngineInsertInto(t *testing.T) {
 		WithOptions: map[string]string{
 			"storage":      "local",
 			"format":       "csv",
-			"location":     dir,
+			"path":     dir,
 			"file_pattern": "users.csv",
 		},
 	}
@@ -1181,7 +1181,7 @@ func TestEngineInsertInto(t *testing.T) {
 		WithOptions: map[string]string{
 			"storage":   "local",
 			"format":    "csv",
-			"location":  targetDir,
+			"path":  targetDir,
 			"file_name": "result.csv",
 		},
 	}
@@ -1246,7 +1246,7 @@ func TestEnginePartitionPruning(t *testing.T) {
 		WithOptions: map[string]string{
 			"storage":      "local",
 			"format":       "csv",
-			"location":     dir,
+			"path":     dir,
 			"file_pattern": "events.csv",
 		},
 	}
@@ -1266,7 +1266,7 @@ func TestEnginePartitionPruning(t *testing.T) {
 		WithOptions: map[string]string{
 			"storage":   "local",
 			"format":    "csv",
-			"location":  targetDir,
+			"path":  targetDir,
 			"file_name": "data.csv",
 		},
 	}
@@ -1325,7 +1325,7 @@ func TestEngineUnion(t *testing.T) {
 			WithOptions: map[string]string{
 				"storage":      "local",
 				"format":       "csv",
-				"location":     dir,
+				"path":     dir,
 				"file_pattern": path,
 			},
 		}
@@ -1370,7 +1370,7 @@ func TestEngineUnionDedup(t *testing.T) {
 		WithOptions: map[string]string{
 			"storage":      "local",
 			"format":       "csv",
-			"location":     dir,
+			"path":     dir,
 			"file_pattern": "data.csv",
 		},
 	}
@@ -1411,7 +1411,7 @@ func TestEngineCaseWhen(t *testing.T) {
 		WithOptions: map[string]string{
 			"storage":      "local",
 			"format":       "csv",
-			"location":     dir,
+			"path":     dir,
 			"file_pattern": "users.csv",
 		},
 	}

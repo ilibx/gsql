@@ -144,14 +144,14 @@ func parseStorageURL(tbl *Table) {
             if len(pathParts) > 0 {
                 tbl.WithOptions["bucket"] = pathParts[0]
             }
-            if len(pathParts) > 1 {
-                tbl.WithOptions["prefix"] = strings.Join(pathParts[1:], "/")
+			if len(pathParts) > 1 {
+				tbl.WithOptions["path"] = strings.Join(pathParts[1:], "/")
             }
         } else {
             // Host is a bucket name (legacy): s3://bucket/path
             tbl.WithOptions["bucket"] = parsed.Host
-            if len(pathParts) > 0 && pathParts[0] != "" {
-                tbl.WithOptions["prefix"] = strings.Join(pathParts, "/")
+			if len(pathParts) > 0 && pathParts[0] != "" {
+				tbl.WithOptions["path"] = strings.Join(pathParts, "/")
             }
         }
         // Parse query parameters
@@ -203,6 +203,6 @@ func parseStorageURL(tbl *Table) {
         }
     case "local":
         tbl.WithOptions["storage"] = "local"
-        tbl.WithOptions["location"] = parsed.Path
+		tbl.WithOptions["path"] = parsed.Path
     }
 }

@@ -7,7 +7,7 @@ CREATE TABLE monthly_summary (
 WITH (
   storage = 'local',
   format = 'csv',
-  location = 'samples/result/monthly',
+  path = 'samples/result/monthly',
   file_name = 'summary.csv'
 )
 PARTITIONED BY (year);

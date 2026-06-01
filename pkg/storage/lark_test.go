@@ -83,7 +83,7 @@ func TestLarkStorageWithFolder(t *testing.T) {
 			"storage":      "lark",
 			"app_id":       "cli_xxx",
 			"app_secret":   "secret_xxx",
-			"folder":       "gsql-data",
+			"path":         "gsql-data",
 			"parent_token": "parent_folder_token",
 		},
 	}
@@ -108,7 +108,7 @@ func TestLarkStorageFolderWithoutParentToken(t *testing.T) {
 			"storage":     "lark",
 			"app_id":      "cli_xxx",
 			"app_secret":  "secret_xxx",
-			"folder":      "gsql-data",
+			"path":       "gsql-data",
 			// no parent_token — resolveRoot will try to find/create at app root
 		},
 	}
@@ -135,7 +135,7 @@ func TestLarkStorageAlternativeOptionKeys(t *testing.T) {
 			"lark_app_secret": "secret_xxx",
 			"lark_root_token": "folder_token_xxx",
 			"lark_chat_id":   "oc_xxxxx",
-			"lark_folder":    "gsql-data",
+			"path":    "gsql-data",
 		},
 	}
 
@@ -145,8 +145,8 @@ func TestLarkStorageAlternativeOptionKeys(t *testing.T) {
 	if chatID := tbl.Option("lark_chat_id", ""); chatID != "oc_xxxxx" {
 		t.Errorf("expected lark_chat_id 'oc_xxxxx', got %q", chatID)
 	}
-	if folder := tbl.Option("lark_folder", ""); folder != "gsql-data" {
-		t.Errorf("expected lark_folder 'gsql-data', got %q", folder)
+	if p := tbl.Option("path", ""); p != "gsql-data" {
+		t.Errorf("expected path 'gsql-data', got %q", p)
 	}
 }
 
@@ -160,7 +160,7 @@ func TestLarkStorageFolderNameWithParentToken(t *testing.T) {
 			"storage":      "lark",
 			"app_id":       "cli_xxx",
 			"app_secret":   "secret_xxx",
-			"folder_name": "gsql-data",
+			"path":         "gsql-data",
 			"parent_token": "parent_folder_token",
 		},
 	}
@@ -182,10 +182,10 @@ func TestLarkStorageFolderBackwardCompat(t *testing.T) {
 			{Name: "id", Type: "INT"},
 		},
 		WithOptions: map[string]string{
-			"storage":     "lark",
-			"app_id":      "cli_xxx",
-			"app_secret":  "secret_xxx",
-			"folder_name": "gsql-data",
+			"storage":    "lark",
+			"app_id":     "cli_xxx",
+			"app_secret": "secret_xxx",
+			"path":       "gsql-data",
 			// no parent_token — resolveRoot will try to find/create at app root
 		},
 	}
@@ -210,12 +210,12 @@ func TestLarkStorageFolderNameMissingRoot(t *testing.T) {
 			"storage":    "lark",
 			"app_id":     "cli_xxx",
 			"app_secret": "secret_xxx",
-			// no folder and no root_token
+			// no path and no root_token
 		},
 	}
 
 	_, err := newLarkStorage(tbl)
 	if err == nil {
-		t.Error("expected error when neither folder nor root_token is set, got nil")
+		t.Error("expected error when neither path nor root_token is set, got nil")
 	}
 }

@@ -39,7 +39,7 @@ func TestGitLFSAlternativeStorageType(t *testing.T) {
 		},
 		WithOptions: map[string]string{
 			"storage":       "gitlfs",
-			"git_lfs_path":  "/lfs/cache",
+			"path":  "/lfs/cache",
 			"format":        "csv",
 			"file_pattern":  "*.csv",
 		},

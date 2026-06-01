@@ -7,7 +7,7 @@ CREATE TABLE users (
 WITH (
   storage = 'local',
   format = 'csv',
-  location = '/tmp/users',
+  path = '/tmp/users',
   file_name = 'users.csv'
 );
 

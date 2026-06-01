@@ -19,7 +19,7 @@ func init() {
 }
 
 func buildSQLiteDSN(tbl *catalog.Table) string {
-	path := tbl.Option("path", tbl.Option("location", ""))
+	path := tbl.Option("path", "")
 	if path == "" {
 		path = tbl.Option("database", "gsql.db")
 	}

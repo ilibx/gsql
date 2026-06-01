@@ -60,15 +60,14 @@ CREATE TABLE users (
 WITH (
   storage = 'local',
   format = 'csv',
-  location = '/tmp/users',
-  file_pattern = '*.csv',
-  file_name = 'result.csv'
+  path = '/tmp/users',
+  file_pattern = '*.csv'
 );
 ```
 
 | 参数 | 说明 |
 |------|------|
-| `location` | 数据目录路径 |
+| `path` | 数据目录路径 |
 | `file_pattern` | 读取时文件匹配模式（如 `*.csv`） |
 | `file_name` | 写入时的输出文件名 |
 | `partition_format` | 分区目录格式：`col=value`（默认）或 `value` |
@@ -122,7 +121,7 @@ WITH (
 |------|------|
 | `bucket` | S3 存储桶名 |
 | `region` | 区域（如 `us-east-1`） |
-| `prefix` | 路径前缀 |
+| `path` | 路径前缀 |
 | `endpoint` | 自定义 endpoint（MinIO 等） |
 | `access_key` | 访问密钥 ID |
 | `access_secret` | 访问密钥 Secret |
@@ -210,7 +209,7 @@ CREATE TABLE gitlfs_cache (
 )
 WITH (
   storage = 'gitlfs',
-  git_lfs_path = '/lfs/objects',
+  path = '/lfs/objects',
   format = 'csv',
   file_pattern = '*.csv'
 );
@@ -234,7 +233,7 @@ WITH (
   storage = 'lark',
   app_id = 'cli_xxxxxxxxxxxx',
   app_secret = 'xxxxxxxxxxxxxxxxxxxxxxxxxxxx',
-  folder = 'gsql-data',            -- 在网盘根目录自动创建/查找
+  path = 'gsql-data',            -- 在网盘根目录自动创建/查找
   chat_id = 'oc_xxxxxxxxxxxxx',    -- 可选：自动分享到群聊
   format = 'csv',
   file_pattern = '*.csv'
@@ -260,7 +259,7 @@ WITH (
 |------|------|
 | `app_id` / `lark_app_id` | 飞书应用的 App ID |
 | `app_secret` / `lark_app_secret` | 飞书应用的 App Secret |
-| `folder` / `lark_folder` | 根文件夹名称（推荐，自动创建/查找） |
+| `path` | 根文件夹名称（推荐，自动创建/查找） |
 | `root_token` / `lark_root_token` | 根文件夹 token（与 `folder` 二选一） |
 | `chat_id` / `lark_chat_id` | 群聊 ID（可选，自动授权） |
 | `format` | 支持 `csv`、`json`、`excel` / `xlsx` |

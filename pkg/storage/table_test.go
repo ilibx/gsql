@@ -22,7 +22,7 @@ func TestWritePartitionedTable(t *testing.T) {
 		},
 		PartitionBy: []string{"dt"},
 		WithOptions: map[string]string{
-			"location":  dir,
+			"path":  dir,
 			"format":    "csv",
 			"file_name": "data.csv",
 		},
@@ -73,7 +73,7 @@ func TestWriteAppendNonPartitioned(t *testing.T) {
 			{Name: "name", Type: "STRING"},
 		},
 		WithOptions: map[string]string{
-			"location":  dir,
+			"path":  dir,
 			"format":    "csv",
 			"file_name": "result.csv",
 		},
@@ -115,7 +115,7 @@ func TestWriteAppendPartitioned(t *testing.T) {
 		},
 		PartitionBy: []string{"dt"},
 		WithOptions: map[string]string{
-			"location":  dir,
+			"path":  dir,
 			"format":    "csv",
 			"file_name": "data.csv",
 		},
@@ -156,7 +156,7 @@ func TestWriteNonPartitionedTableUnchanged(t *testing.T) {
 			{Name: "name", Type: "STRING"},
 		},
 		WithOptions: map[string]string{
-			"location":  dir,
+			"path":  dir,
 			"format":    "csv",
 			"file_name": "result.csv",
 		},
@@ -192,7 +192,7 @@ func TestReadPartitionedTable(t *testing.T) {
 		},
 		PartitionBy: []string{"dt"},
 		WithOptions: map[string]string{
-			"location":  dir,
+			"path":  dir,
 			"format":    "csv",
 			"file_name": "data.csv",
 		},
@@ -228,7 +228,7 @@ func TestReadPartitionedTableWithFilter(t *testing.T) {
 		},
 		PartitionBy: []string{"dt"},
 		WithOptions: map[string]string{
-			"location":  dir,
+			"path":  dir,
 			"format":    "csv",
 			"file_name": "data.csv",
 		},

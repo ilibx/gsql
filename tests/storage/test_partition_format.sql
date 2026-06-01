@@ -7,7 +7,7 @@ CREATE TABLE monthly_summary_bare (
 WITH (
   storage = 'local',
   format = 'csv',
-  location = 'samples/result/monthly_bare',
+  path = 'samples/result/monthly_bare',
   file_name = 'summary.csv',
   partition_format = 'value'
 )

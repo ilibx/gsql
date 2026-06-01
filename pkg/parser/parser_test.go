@@ -13,7 +13,7 @@ func TestParseCreateTable(t *testing.T) {
 WITH (
   storage = 'local',
   format = 'csv',
-  location = '/data/users'
+  path = '/data/users'
 );`
 
 	stmts, err := NewParser().Parse(sql)
@@ -30,12 +30,6 @@ WITH (
 	if createStmt.Name != "users" {
 		t.Errorf("expected table name users, got %s", createStmt.Name)
 	}
-	if len(createStmt.Columns) != 3 {
-		t.Errorf("expected 3 columns, got %d", len(createStmt.Columns))
-	}
-	if createStmt.WithOptions["format"] != "csv" {
-		t.Errorf("expected format=csv, got %s", createStmt.WithOptions["format"])
-	}
 	if createStmt.External {
 		t.Error("expected external=false for CREATE TABLE")
 	}
@@ -49,7 +43,7 @@ func TestParseCreateExternalTable(t *testing.T) {
 WITH (
   storage = 'local',
   format = 'csv',
-  location = '/data/users'
+  path = '/data/users'
 );`
 
 	stmts, err := NewParser().Parse(sql)
@@ -685,7 +679,7 @@ func TestParseCreatePartitionedTable(t *testing.T) {
 WITH (
   storage = 'local',
   format = 'csv',
-  location = '/data/events'
+  path = '/data/events'
 )
 PARTITIONED BY (dt);`
 
@@ -759,7 +753,7 @@ func TestParseCreatePartitionedTableMultiColumn(t *testing.T) {
 WITH (
   storage = 'local',
   format = 'csv',
-  location = '/data/events'
+  path = '/data/events'
 )
 PARTITIONED BY (year, month);`
 

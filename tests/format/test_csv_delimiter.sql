@@ -7,7 +7,7 @@ CREATE TABLE pipe_users (
 WITH (
   storage = 'local',
   format = 'csv',
-  location = 'samples/csv_opts',
+  path = 'samples/csv_opts',
   file_pattern = 'pipe_delim.csv',
   delimiter = '|'
 );

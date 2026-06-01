@@ -9,7 +9,7 @@ CREATE TABLE orders (
 WITH (
   storage = 'local',
   format = 'csv',
-  location = '/tmp/orders',
+  path = '/tmp/orders',
   file_name = 'orders.csv'
 );
 

@@ -74,13 +74,7 @@ func newLarkStorage(tbl *catalog.Table) (Storage, error) {
 	}
 
 	// Support both folder name and direct token for root
-	folder := tbl.Option("folder", "")
-	if folder == "" {
-		folder = tbl.Option("folder_name", "")
-	}
-	if folder == "" {
-		folder = tbl.Option("lark_folder_name", "")
-	}
+	folder := tbl.Option("path", "")
 	rootToken := tbl.Option("root_token", "")
 	if rootToken == "" {
 		rootToken = tbl.Option("lark_root_token", "")

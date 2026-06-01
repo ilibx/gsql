@@ -6,7 +6,7 @@ WITH (
   storage = 'lark',
   app_id = 'cli_aa9915',
   app_secret = 'gmZTViZqt7LJ',
-  folder = 'gsql-data',     
+  path = 'gsql-data',     
   chat_id = 'oc_94036811540',
   format = 'csv',
   include_header = 'true',

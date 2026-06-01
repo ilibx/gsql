@@ -64,19 +64,19 @@ func GetStorage(tbl *catalog.Table) (Storage, error) {
 	storageType := strings.ToLower(tbl.Option("storage", "local"))
 	switch storageType {
 	case "", "local":
-		location := tbl.Option("location", "")
-		if location == "" {
+		path := tbl.Option("path", "")
+		if path == "" {
 			rawURL := tbl.Option("url", "")
 			if rawURL != "" {
 				if parsed, err := url.Parse(rawURL); err == nil && parsed.Scheme == "local" {
-					location = parsed.Path
+					path = parsed.Path
 				}
 			}
-			if location == "" {
-				return nil, fmt.Errorf("missing location for table %s", tbl.Name)
+			if path == "" {
+				return nil, fmt.Errorf("missing path for table %s", tbl.Name)
 			}
 		}
-		return NewLocalStorage(location), nil
+		return NewLocalStorage(path), nil
 	case "s3":
 		return newS3Storage(tbl)
 	case "ftp":

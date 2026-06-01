@@ -51,7 +51,7 @@ type s3Storage struct {
 func newS3Storage(tbl *catalog.Table) (Storage, error) {
 	rawURL := tbl.Option("url", "")
 	bucket := tbl.Option("bucket", "")
-	prefix := tbl.Option("prefix", "")
+	prefix := tbl.Option("path", "")
 
 	if rawURL != "" {
 		parsedBucket, parsedPrefix, err := parseS3URL(rawURL)

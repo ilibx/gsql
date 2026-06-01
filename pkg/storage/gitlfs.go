@@ -18,7 +18,6 @@ import (
 
 // Git LFS storage constants
 const (
-	gitLFSPathKey = "git_lfs_path"
 	gitLFSRepoKey = "git_lfs_repo"
 )
 
@@ -38,17 +37,13 @@ type gitlfsStorage struct {
 
 func newGitLFSStorage(tbl *catalog.Table) (Storage, error) {
 	repoPath := tbl.Option(gitLFSRepoKey, "")
-	lfsPath := tbl.Option(gitLFSPathKey, "")
-	path := tbl.Option("path", "")
+	lfsPath := tbl.Option("path", "")
 	repo := tbl.Option("repo", "")
-	if path != "" {
-		lfsPath = path
-	}
 	if repo != "" {
 		repoPath = repo
 	}
 	if repoPath == "" && lfsPath == "" {
-		return nil, fmt.Errorf("missing git_lfs_repo or git_lfs_path for table %s", tbl.Name)
+		return nil, fmt.Errorf("missing repo or path for table %s", tbl.Name)
 	}
 	var sourcePath, lfsCachePath string
 	if repoPath != "" {
