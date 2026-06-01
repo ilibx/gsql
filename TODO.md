@@ -95,7 +95,8 @@
 - [x] engine 在 SELECT 中自动区分聚合 vs 标量函数
 - [x] `evaluateExpressionValue()` 支持 `FuncCallExpr` 求值
 - [x] `evaluateExpression()` 支持 `FuncCallExpr` 布尔求值
-- [ ] WHERE 中多参函数调用（如 `SUBSTRING(col,1,2)`）完整支持
+- [x] WHERE 中多参函数调用（如 `SUBSTRING(col,1,2)`）完整支持
+- [x] 嵌套函数调用（如 `UPPER(CONCAT(first, ' ', last))`, `ROUND(ABS(age * 1.5), 0)`）
 
 ### P1：字符串函数
 - [x] `CONCAT(str1, str2, ...)` — 字符串拼接

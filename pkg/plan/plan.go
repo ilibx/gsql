@@ -868,12 +868,7 @@ func evaluateExpressionValue(row storage.Row, expr parser.Expression) string {
 		if fn, ok := LookupFunc(v.FuncName); ok && fn.ScalarFn != nil {
 			args := make([]string, len(v.Args))
 			for i, a := range v.Args {
-				// Resolve column references; pass through literals and type names
-				if rowVal, exists := row[a]; exists {
-					args[i] = rowVal
-				} else {
-					args[i] = a
-				}
+				args[i] = resolveFuncArg(row, a)
 			}
 			return fn.ScalarFn(args)
 		}
@@ -931,6 +926,115 @@ func evaluateExpressionValue(row storage.Row, expr parser.Expression) string {
 	default:
 		return ""
 	}
+}
+
+// resolveFuncArg resolves a function argument to its actual value.
+// Handles plain column references, arithmetic expressions, and literals.
+// splitFuncArgs splits a function argument list on commas, respecting nesting depth.
+func splitFuncArgs(s string) []string {
+	var args []string
+	depth := 0
+	start := 0
+	for i := 0; i < len(s); i++ {
+		switch s[i] {
+		case '(':
+			depth++
+		case ')':
+			depth--
+		case ',':
+			if depth == 0 {
+				args = append(args, s[start:i])
+				start = i + 1
+			}
+		}
+	}
+	args = append(args, s[start:])
+	return args
+}
+
+func resolveFuncArg(row storage.Row, arg string) string {
+	// First try as a direct row key (stripped of table alias)
+	plain := stripColAlias(arg)
+	if val, exists := row[plain]; exists {
+		return val
+	}
+	// Try the raw arg as a row key
+	if val, exists := row[arg]; exists {
+		return val
+	}
+	// Check for nested function call: IDENT(...)
+	if idx := strings.IndexAny(arg, "("); idx > 0 && strings.HasSuffix(arg, ")") {
+		funcName := strings.ToUpper(strings.TrimSpace(arg[:idx]))
+		inner := strings.TrimSpace(arg[idx+1 : len(arg)-1])
+		// Split inner by commas respecting nesting depth
+		innerArgs := splitFuncArgs(inner)
+		resolved := make([]string, 0, len(innerArgs))
+		for _, a := range innerArgs {
+			resolved = append(resolved, resolveFuncArg(row, a))
+		}
+		if fn, ok := LookupFunc(funcName); ok && fn.ScalarFn != nil {
+			return fn.ScalarFn(resolved)
+		}
+	}
+	// Check if it's an arithmetic expression (contains +, -, *, /)
+	if strings.ContainsAny(arg, "+-*/") {
+		return evalArithmeticString(row, arg)
+	}
+	return arg
+}
+
+// evalArithmeticString evaluates a simple arithmetic expression string like "amount * discount".
+// Supports +, -, *, / with two operands.
+func evalArithmeticString(row storage.Row, expr string) string {
+	// Strip enclosing parentheses if present (from exprToString wrapping)
+	expr = strings.TrimSpace(expr)
+	for strings.HasPrefix(expr, "(") && strings.HasSuffix(expr, ")") && !strings.HasSuffix(expr, "()") {
+		expr = strings.TrimSpace(expr[1 : len(expr)-1])
+	}
+	// Find the operator outside of any parentheses
+	depth := 0
+	opIdx := -1
+	var op byte
+	for i := 0; i < len(expr); i++ {
+		switch expr[i] {
+		case '(':
+			depth++
+		case ')':
+			depth--
+		case '+', '-', '*', '/':
+			if depth == 0 {
+				opIdx = i
+				op = expr[i]
+				break
+			}
+		}
+	}
+	if opIdx < 0 {
+		return expr
+	}
+	left := strings.TrimSpace(expr[:opIdx])
+	right := strings.TrimSpace(expr[opIdx+1:])
+	leftVal := resolveFuncArg(row, left)
+	rightVal := resolveFuncArg(row, right)
+	leftNum, lErr := strconv.ParseFloat(leftVal, 64)
+	rightNum, rErr := strconv.ParseFloat(rightVal, 64)
+	if lErr != nil || rErr != nil {
+		return expr
+	}
+	switch op {
+	case '+':
+		return formatFloat(leftNum + rightNum)
+	case '-':
+		return formatFloat(leftNum - rightNum)
+	case '*':
+		return formatFloat(leftNum * rightNum)
+	case '/':
+		if rightNum == 0 {
+			return ""
+		}
+		return formatFloat(leftNum / rightNum)
+	}
+	return expr
 }
 
 func stringInSlice(s string, list []string) bool {

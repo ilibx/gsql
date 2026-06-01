@@ -1233,9 +1233,127 @@ func TestEngineJoinArithmeticExpr(t *testing.T) {
 			t.Fatalf("expected 2 rows, got %d", len(rows))
 		}
 		// l.amount=10 * r.discount=0.9 = 9, l.amount=20 * r.discount=0.8 = 16
-		// The project node evaluates the expression, result key is stripped to "amount * r.discount"
 		for _, r := range rows {
 			t.Logf("row: %v", r)
+		}
+	})
+
+	t.Run("ROUND(expr, 2) with table-prefixed columns", func(t *testing.T) {
+		query := &parser.SelectQuery{
+			Table:   "left_t",
+			TableAlias: "l",
+			Columns: []string{"ROUND((l.amount * r.discount))"},
+			ColumnExprs: []parser.Expression{
+				&parser.FuncCallExpr{
+					FuncName: "ROUND",
+					Args:     []string{"(l.amount * r.discount)", "2"},
+				},
+			},
+			Joins: []parser.JoinClause{
+				{RightTable: "right_t", RightAlias: "r", LeftColumn: "id", RightColumn: "ref_id", JoinType: "INNER"},
+			},
+			Aggregates: []parser.AggregateExpr{
+				{FuncName: "ROUND", Column: "(l.amount * r.discount)", Args: []string{"(l.amount * r.discount)", "2"}},
+			},
+		}
+		rows, err := eng.executeSelect(query)
+		if err != nil {
+			t.Fatalf("ROUND query failed: %v", err)
+		}
+		if len(rows) != 2 {
+			t.Fatalf("expected 2 rows, got %d", len(rows))
+		}
+		for _, r := range rows {
+			for _, v := range r {
+				if v == "9.00" || v == "16.00" {
+					continue
+				}
+				t.Errorf("unexpected value %q (expected 9.00 and 16.00)", v)
+			}
+		}
+	})
+}
+
+func TestEngineNestedFuncCall(t *testing.T) {
+	dir := t.TempDir()
+	csv := "1,alice,Smith\n2,bob,Jones\n"
+	if err := os.WriteFile(filepath.Join(dir, "data.csv"), []byte(csv), 0o644); err != nil {
+		t.Fatalf("write csv failed: %v", err)
+	}
+
+	cat := catalog.NewCatalog()
+	eng := NewEngine(cat)
+
+	table := &catalog.Table{
+		Name:    "users",
+		Columns: []catalog.ColumnDef{{Name: "id", Type: "INT"}, {Name: "first_name", Type: "STRING"}, {Name: "last_name", Type: "STRING"}},
+		WithOptions: map[string]string{
+			"storage": "local", "format": "csv", "path": dir, "file_pattern": "data.csv",
+		},
+	}
+	if err := cat.CreateTable(table); err != nil {
+		t.Fatalf("create table failed: %v", err)
+	}
+
+	t.Run("UPPER(CONCAT(first_name, ' ', last_name))", func(t *testing.T) {
+		query := &parser.SelectQuery{
+			Table:   "users",
+			Columns: []string{"UPPER(CONCAT(first_name, ,last_name))"},
+			ColumnExprs: []parser.Expression{
+				&parser.FuncCallExpr{
+					FuncName: "UPPER",
+					Args:     []string{"CONCAT(first_name, ,last_name)"},
+				},
+			},
+			Aggregates: []parser.AggregateExpr{
+				{FuncName: "UPPER", Column: "CONCAT(first_name, ,last_name)", Args: []string{"CONCAT(first_name, ,last_name)"}},
+			},
+		}
+		rows, err := eng.executeSelect(query)
+		if err != nil {
+			t.Fatalf("UPPER(CONCAT) query failed: %v", err)
+		}
+		if len(rows) != 2 {
+			t.Fatalf("expected 2 rows, got %d", len(rows))
+		}
+		expected := []string{"ALICE SMITH", "BOB JONES"}
+		for i, r := range rows {
+			for _, v := range r {
+				if v != expected[i] {
+					t.Errorf("row %d: expected %q, got %q", i, expected[i], v)
+				}
+			}
+		}
+	})
+
+	t.Run("UPPER(SUBSTR(first_name, 1, 3))", func(t *testing.T) {
+		query := &parser.SelectQuery{
+			Table:   "users",
+			Columns: []string{"UPPER(SUBSTR(first_name,1,3))"},
+			ColumnExprs: []parser.Expression{
+				&parser.FuncCallExpr{
+					FuncName: "UPPER",
+					Args:     []string{"SUBSTR(first_name,1,3)"},
+				},
+			},
+			Aggregates: []parser.AggregateExpr{
+				{FuncName: "UPPER", Column: "SUBSTR(first_name,1,3)", Args: []string{"SUBSTR(first_name,1,3)"}},
+			},
+		}
+		rows, err := eng.executeSelect(query)
+		if err != nil {
+			t.Fatalf("UPPER(SUBSTR) query failed: %v", err)
+		}
+		if len(rows) != 2 {
+			t.Fatalf("expected 2 rows, got %d", len(rows))
+		}
+		expected := []string{"ALI", "BOB"}
+		for i, r := range rows {
+			for _, v := range r {
+				if v != expected[i] {
+					t.Errorf("row %d: expected %q, got %q", i, expected[i], v)
+				}
+			}
 		}
 	})
 }

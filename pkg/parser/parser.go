@@ -1700,12 +1700,35 @@ func (p *Parser) parseFuncArgs() ([]string, error) {
 		return nil, nil
 	}
 	for {
-		if p.cur.Type == IDENT {
+		if p.cur.Type == IDENT && p.peekIs(LPAREN) {
+				// nested function call, e.g. UPPER(SUBSTR(name,1,3))
+				funcName := strings.ToUpper(p.cur.Literal)
+				p.nextToken() // consume IDENT
+				p.nextToken() // consume LPAREN
+				innerArgs, err := p.parseFuncArgs()
+				if err != nil {
+					return nil, fmt.Errorf("inside %s(): %w", funcName, err)
+				}
+				if p.cur.Type != RPAREN {
+					return nil, fmt.Errorf("expected ) after arguments in %s()", funcName)
+				}
+				p.nextToken()
+				args = append(args, funcName+"("+strings.Join(innerArgs, ",")+")")
+		} else if p.cur.Type == IDENT {
 			col, err := p.parseDottedIdentifier()
 			if err != nil {
 				return nil, err
 			}
-			args = append(args, col)
+			if p.cur.Type == PLUS || p.cur.Type == MINUS || p.cur.Type == ASTERISK || p.cur.Type == DIV {
+				// arithmetic expression as argument, e.g. ROUND(amount * discount, 2)
+				expr, err := p.parseArithmeticExpr(&ColumnRef{Name: col})
+				if err != nil {
+					return nil, err
+				}
+				args = append(args, exprToString(expr))
+			} else {
+				args = append(args, col)
+			}
 		} else if p.cur.Type == NUMBER || p.cur.Type == STRING {
 			args = append(args, p.cur.Literal)
 			p.nextToken()

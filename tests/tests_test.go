@@ -146,3 +146,4 @@ func TestFuncConditional(t *testing.T) { runTestSQL(t, "func_conditional", "func
 func TestFuncDatetime(t *testing.T)    { runTestSQL(t, "func_datetime", "functions", "test_func_datetime.sql") }
 func TestFuncWindow(t *testing.T)      { runTestSQL(t, "func_window", "functions", "test_func_window.sql") }
 func TestFuncMisc(t *testing.T)        { runTestSQL(t, "func_misc", "functions", "test_func_misc.sql") }
+func TestNestedFunc(t *testing.T)      { runTestSQL(t, "nested_func", "functions", "test_nested_func.sql") }

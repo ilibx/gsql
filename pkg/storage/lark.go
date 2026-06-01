@@ -794,7 +794,11 @@ func (s *larkStorage) downloadViaExport(ctx context.Context, token, entryType st
 		case 1:
 			continue
 		case 2:
-			return nil, fmt.Errorf("export failed: %s", statusResp.Data.Result.JobErrorMsg)
+			msg := statusResp.Data.Result.JobErrorMsg
+			if msg == "" {
+				msg = "Lark export job reported failure (no detail), raw response: " + string(respData)
+			}
+			return nil, fmt.Errorf("export failed: %s", msg)
 		}
 	}
 }

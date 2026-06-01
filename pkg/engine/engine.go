@@ -507,7 +507,7 @@ func (e *Engine) addProjection(root plan.LogicalNode, sel *parser.SelectQuery) p
 		columns = append(columns, stripped)
 		if i < len(sel.ColumnExprs) && sel.ColumnExprs[i] != nil {
 			columnExprs = append(columnExprs, sel.ColumnExprs[i])
-		} else if expr := e.makeFuncCallExpr(stripped, sel); expr != nil {
+		} else if expr := e.makeFuncCallExpr(col, sel); expr != nil {
 			columnExprs = append(columnExprs, expr)
 		} else {
 			columnExprs = append(columnExprs, nil)
@@ -540,13 +540,13 @@ func (e *Engine) makeFuncCallExpr(col string, sel *parser.SelectQuery) parser.Ex
 		return nil
 	}
 	inner := col[idx+1 : len(col)-1]
-	// Prefer full args from sel.Aggregates (handles multi-arg scalar functions)
+	// Prefer full args from sel.Aggregates (handles multi-arg scalar and nested functions)
 	colArg0 := inner
 	if commaIdx := strings.IndexByte(inner, ','); commaIdx >= 0 {
 		colArg0 = strings.TrimSpace(inner[:commaIdx])
 	}
 	for _, a := range sel.Aggregates {
-		if a.FuncName != funcName || len(a.Args) <= 1 {
+		if a.FuncName != funcName {
 			continue
 		}
 		// Try full-match first (handles commas inside string literals)

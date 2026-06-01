@@ -21,7 +21,7 @@ make test
 | 文档 | 说明 |
 |------|------|
 | [基本用法](docs/basic.md) | 命令行、建表、查询、插入、分区表、EXPLAIN |
-| [内置函数](docs/functions.md) | 90+ Hive 风格函数：聚合、窗口、数学、字符串、日期、条件、杂项 |
+| [内置函数](docs/functions.md) | 100+ Hive 风格函数：聚合、窗口、数学、字符串、日期、条件、杂项，支持嵌套调用 |
 | [存储后端](docs/storage.md) | Local、S3、FTP/SFTP、WebDAV、Git LFS、飞书 Lark |
 | [数据库](docs/database.md) | MySQL、PostgreSQL、SQLite 作为数据源/目标 |
 | [文件格式](docs/format.md) | CSV、JSON、Excel (.xlsx) 读写及选项 |
@@ -30,7 +30,7 @@ make test
 
 - **SQL 语法**：`SELECT` / `WHERE` / `JOIN` / `GROUP BY` / `HAVING` / `ORDER BY` / `LIMIT` / `DISTINCT` / `UNION ALL` / `CTE (WITH)` / 子查询
 - **表达式**：算术运算、比较、`IN` / `NOT IN`、`LIKE`、`IS NULL`、`CASE WHEN`
-- **函数**：90+ Hive 兼容内置函数（聚合、窗口、数学、字符串、日期、条件、正则、JSON、哈希、脱敏等）
+- **函数**：100+ Hive 兼容内置函数（聚合、窗口、数学、字符串、日期、条件、正则、JSON、哈希、脱敏等），支持嵌套函数调用
 - **INSERT**：`INSERT OVERWRITE` 覆盖写入、`INSERT INTO` 追加
 - **分区表**：`PARTITIONED BY` 定义，自动分区裁剪（等值+范围），支持 `col=value` 和裸值两种目录格式
 - **文件格式**：CSV（支持自定义分隔符、引号、表头等）、JSON（每行一个对象）、Excel (.xlsx)

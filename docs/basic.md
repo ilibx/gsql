@@ -67,6 +67,18 @@ SELECT * FROM users WHERE age IN (28, 31, 35);
 SELECT * FROM users WHERE email IS NOT NULL;
 ```
 
+### 函数调用
+
+SELECT 列表和 WHERE 中支持标量函数调用，且函数可以任意嵌套：
+
+```sql
+SELECT UPPER(name) AS name_upper FROM users;
+SELECT SUBSTR(name, 1, 3) AS prefix FROM users;
+SELECT UPPER(SUBSTR(name, 1, 3)) AS upper_prefix FROM users;
+SELECT CONCAT(UPPER(name), ' from ', city) AS descr FROM users;
+SELECT ROUND(ABS(age * 1.5), 0) AS rounded FROM users;
+```
+
 ### 别名
 
 ```sql

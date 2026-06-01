@@ -211,6 +211,74 @@ func TestParseAggregateFunctions(t *testing.T) {
 	}
 }
 
+func TestParseNestedFuncCall(t *testing.T) {
+	tests := []struct {
+		sql      string
+		colKey   string
+		aggFunc  string
+		aggCol   string
+		aggArgs  []string
+	}{
+		{
+			sql:     `SELECT UPPER(SUBSTR(name, 1, 3)) FROM users;`,
+			colKey:  "UPPER(SUBSTR(name,1,3))",
+			aggFunc: "UPPER",
+			aggCol:  "SUBSTR(name,1,3)",
+			aggArgs: []string{"SUBSTR(name,1,3)"},
+		},
+		{
+			sql:     `SELECT CONCAT(UPPER(name), ' ', last_name) FROM users;`,
+			colKey:  "CONCAT(UPPER(name))",
+			aggFunc: "CONCAT",
+			aggCol:  "UPPER(name)",
+			aggArgs: []string{"UPPER(name)", " ", "last_name"},
+		},
+		{
+			sql:     `SELECT ROUND(UPPER(name), 2) FROM users;`,
+			colKey:  "ROUND(UPPER(name))",
+			aggFunc: "ROUND",
+			aggCol:  "UPPER(name)",
+			aggArgs: []string{"UPPER(name)", "2"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.sql, func(t *testing.T) {
+			stmts, err := NewParser().Parse(tt.sql)
+			if err != nil {
+				t.Fatalf("parse failed: %v", err)
+			}
+			selectStmt, ok := stmts[0].(*SelectStmt)
+			if !ok {
+				t.Fatalf("expected SelectStmt, got %T", stmts[0])
+			}
+			if len(selectStmt.Query.Columns) != 1 {
+				t.Fatalf("expected 1 column, got %d: %v", len(selectStmt.Query.Columns), selectStmt.Query.Columns)
+			}
+			if selectStmt.Query.Columns[0] != tt.colKey {
+				t.Errorf("column key: expected %q, got %q", tt.colKey, selectStmt.Query.Columns[0])
+			}
+			if len(selectStmt.Query.Aggregates) != 1 {
+				t.Fatalf("expected 1 aggregate, got %d", len(selectStmt.Query.Aggregates))
+			}
+			agg := selectStmt.Query.Aggregates[0]
+			if agg.FuncName != tt.aggFunc {
+				t.Errorf("FuncName: expected %q, got %q", tt.aggFunc, agg.FuncName)
+			}
+			if agg.Column != tt.aggCol {
+				t.Errorf("Column: expected %q, got %q", tt.aggCol, agg.Column)
+			}
+			if len(agg.Args) != len(tt.aggArgs) {
+				t.Fatalf("Args: expected %d args, got %d: %v", len(tt.aggArgs), len(agg.Args), agg.Args)
+			}
+			for i, a := range agg.Args {
+				if a != tt.aggArgs[i] {
+					t.Errorf("arg %d: expected %q, got %q", i, tt.aggArgs[i], a)
+				}
+			}
+		})
+	}
+}
+
 func TestParseGroupByOrderBy(t *testing.T) {
 	sql := `SELECT name, COUNT(*) FROM users WHERE age > 20 GROUP BY name ORDER BY name LIMIT 10;`
 

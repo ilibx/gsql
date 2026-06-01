@@ -65,6 +65,7 @@ go test ./pkg/plan/... -run TestScalarAbs -v
 2. 在对应的 `register*Builtins()` 中注册函数（函数名大写）
 3. 在 `tests/functions/test_func_*.sql` 中添加测试 SQL
 4. 在 `docs/functions.md` 中添加文档和可执行示例
+5. 函数调用支持任意层级的嵌套（`UPPER(CONCAT(a, ' ', b))`）
 
 ### 新增存储后端
 
@@ -109,6 +110,8 @@ SQL → Parser → Logical Plan → Optimizer → Physical Plan → Execute
 | 日期时间 | 25 | `builtin_datetime.go` |
 | 条件 | 5 | `builtin_conditional.go` |
 | 杂项 | 24 | `builtin_misc.go` |
+
+所有函数支持任意层级嵌套调用（如 `UPPER(CONCAT(a, ' ', b))`）。
 
 函数注册在 `pkg/plan/builtin.go:init()` 中，所有函数名不区分大小写。
 

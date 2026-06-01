@@ -1,8 +1,10 @@
 # Built-in Functions
 
-gsql 提供 90+ 个 Hive 风格的内置函数，涵盖聚合、窗口、数学、字符串、日期时间、条件判断及杂项函数。
+gsql 提供 100+ 个 Hive 风格的内置函数，涵盖聚合、窗口、数学、字符串、日期时间、条件判断及杂项函数。
 
 > 函数名不区分大小写。以下所有示例均可直接执行。
+>
+> 函数调用支持嵌套，如 `UPPER(CONCAT(first, ' ', last))`、`ROUND(ABS(age * 1.5), 0)`。
 
 ---
 
@@ -432,4 +434,28 @@ SELECT MASK_SHOW_LAST_N('Abcd1234', 3) AS show_last;     -- Xxxx234
 
 ```sql
 SELECT CURRENT_USER() AS usr, CURRENT_DATABASE() AS db, VERSION() AS ver;
+```
+
+---
+
+## 嵌套函数调用
+
+所有标量函数支持任意层级嵌套。内层函数返回值自动作为外层函数的参数。
+
+| 嵌套示例 | 说明 |
+|----------|------|
+| `UPPER(SUBSTR(name, 1, 3))` | 先截取再转大写 |
+| `CONCAT(UPPER(name), ' ', city)` | 先转大写再拼接 |
+| `REPLACE(UPPER(name), 'A', 'X')` | 先转大写再替换 |
+| `ROUND(ABS(age * 1.5), 0)` | 算术表达式作为函数参数 |
+| `UPPER(CONCAT(SUBSTR(name, 1, 1), '. ', city))` | 三层嵌套 |
+| `LENGTH(UPPER(name))` | 函数结果作为另一函数的输入 |
+
+```sql
+-- 嵌套函数示例（基于 users 表）
+SELECT UPPER(SUBSTR(name, 1, 3)) AS prefix FROM users LIMIT 1;     -- ALI
+SELECT CONCAT(UPPER(name), ' from ', city) AS descr FROM users LIMIT 1;   -- ALICE from Beijing
+SELECT LENGTH(UPPER(name)) AS name_len FROM users LIMIT 1;          -- 5
+SELECT UPPER(CONCAT(SUBSTR(name, 1, 1), '. ', city)) AS short FROM users LIMIT 1;  -- A. BEIJING
+SELECT REPLACE(UPPER(name), 'A', 'X') AS replaced FROM users LIMIT 1;  -- XLICE
 ```
