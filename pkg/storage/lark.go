@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -130,13 +131,18 @@ func (s *larkStorage) resolveRoot(ctx context.Context) (string, error) {
 			s.rootToken = appRoot
 			return
 		}
-		// Look up or create the folder under the app's drive root
-		token, err := s.ensureFolder(ctx, appRoot, s.folder)
-		if err != nil {
-			s.rootErr = fmt.Errorf("resolve folder %q failed: %w", s.folder, err)
-			return
+		// Look up or create the folder(s) under the app's drive root,
+	// supporting multi-level paths like "月度账单/供应商账单/2026/04"
+		parts := strings.Split(s.folder, "/")
+		currentToken := appRoot
+		for _, part := range parts {
+			currentToken, err = s.ensureFolder(ctx, currentToken, part)
+			if err != nil {
+				s.rootErr = fmt.Errorf("resolve folder path %q failed at %q: %w", s.folder, part, err)
+				return
+			}
 		}
-		s.rootToken = token
+		s.rootToken = currentToken
 	})
 	return s.rootToken, s.rootErr
 }
@@ -605,7 +611,7 @@ func (s *larkStorage) grantFullAccess(ctx context.Context, token, tokenType stri
 
 func (s *larkStorage) ensureFolder(ctx context.Context, parentToken, name string) (string, error) {
 	t, isDir, _, err := s.resolveChildToken(ctx, parentToken, name)
-	if err != nil {
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return "", err
 	}
 	if t != "" && isDir {
@@ -813,6 +819,9 @@ func (s *larkStorage) Glob(ctx context.Context, pattern string) ([]string, error
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
 	}
+	if strings.Contains(pattern, "**") {
+		return s.globRecursive(ctx, pattern)
+	}
 	dir, filePat := path.Split(pattern)
 	dir = strings.TrimSuffix(dir, "/")
 
@@ -851,6 +860,54 @@ func (s *larkStorage) Glob(ctx context.Context, pattern string) ([]string, error
 	}
 	sort.Strings(result)
 	return result, nil
+}
+
+func (s *larkStorage) globRecursive(ctx context.Context, pattern string) ([]string, error) {
+	// Strip leading "**/" to get the file pattern to match against
+	filePat := strings.TrimPrefix(pattern, "**/")
+	if filePat == pattern {
+		filePat = pattern
+	}
+
+	rootToken, err := s.root(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	var result []string
+	if err := s.walkDir(ctx, rootToken, "", func(relPath string, isDir bool) error {
+		if isDir {
+			return nil
+		}
+		if matched, _ := filepath.Match(filePat, filepath.Base(relPath)); matched {
+			result = append(result, relPath)
+		}
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	sort.Strings(result)
+	return result, nil
+}
+
+func (s *larkStorage) walkDir(ctx context.Context, parentToken, prefix string, fn func(relPath string, isDir bool) error) error {
+	entries, err := s.listDir(ctx, parentToken)
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		relPath := prefix + e.Name
+		if e.Type == "folder" {
+			if err := s.walkDir(ctx, e.Token, relPath+"/", fn); err != nil {
+				return err
+			}
+		} else {
+			if err := fn(relPath, false); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func (s *larkStorage) List(ctx context.Context, dirPath string) ([]string, error) {
