@@ -1,0 +1,1 @@
+SELECT name, amount, order_date FROM users RIGHT JOIN orders ON users.id = orders.user_id ORDER BY order_id LIMIT 5;

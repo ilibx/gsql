@@ -1,0 +1,1 @@
+SELECT name, amount FROM users CROSS JOIN orders ORDER BY users.id, order_id LIMIT 10;

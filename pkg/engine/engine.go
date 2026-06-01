@@ -3,6 +3,7 @@ package engine
 import (
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/ilibx/gsql/pkg/catalog"
@@ -328,9 +329,36 @@ func (e *Engine) addJoins(root plan.LogicalNode, sel *parser.SelectQuery, cteTab
 		}
 		leftCol := stripTableAlias(join.LeftColumn)
 		rightCol := stripTableAlias(join.RightColumn)
-		root = plan.NewLogicalJoin(root, rightRoot, leftCol, rightCol)
+		// If leftCol doesn't exist in the left table but does in the right table,
+		// and rightCol doesn't exist in the right table but does in the left table,
+		// the user wrote the ON condition with sides reversed — swap them.
+		if e.columnExists(leftCol, join.RightTable, cteTables) && !e.columnExists(leftCol, sel.Table, cteTables) &&
+			e.columnExists(rightCol, sel.Table, cteTables) && !e.columnExists(rightCol, join.RightTable, cteTables) {
+			leftCol, rightCol = rightCol, leftCol
+		}
+		joinNode := plan.NewLogicalJoinWithType(root, rightRoot, leftCol, rightCol, join.JoinType)
+		if leftType := e.getColumnType(sel.Table, leftCol); leftType != "" {
+			joinNode.NormalizeKey = NormalizeKeyForType(leftType)
+		}
+		root = joinNode
 	}
 	return root
+}
+
+func (e *Engine) columnExists(col, tableName string, cteTables map[string][]storage.Row) bool {
+	if _, ok := cteTables[strings.ToLower(tableName)]; ok {
+		return true
+	}
+	t, ok := e.catalog.GetTable(tableName)
+	if !ok {
+		return false
+	}
+	for _, c := range t.Columns {
+		if c.Name == col {
+			return true
+		}
+	}
+	return false
 }
 
 func (e *Engine) addFiltersAndGrouping(root plan.LogicalNode, sel *parser.SelectQuery) plan.LogicalNode {
@@ -579,6 +607,68 @@ func (e *Engine) expandStarColumns(sel *parser.SelectQuery) []string {
 		expanded = append(expanded, "*")
 	}
 	return expanded
+}
+
+func (e *Engine) getColumnType(tableName, col string) string {
+	t, ok := e.catalog.GetTable(tableName)
+	if !ok {
+		return ""
+	}
+	for _, c := range t.Columns {
+		if c.Name == col {
+			return strings.ToUpper(strings.Split(c.Type, "(")[0])
+		}
+	}
+	return ""
+}
+
+// NormalizeKeyForType returns a key normalization function for the given column type.
+// This ensures values that represent the same logical value but differ in formatting
+// (e.g. "10.50" vs "10.5", "001" vs "1") still match in JOIN hash lookups.
+func NormalizeKeyForType(colType string) func(string) string {
+	baseType := strings.ToUpper(strings.Split(colType, "(")[0])
+	switch baseType {
+	case "INT", "INTEGER", "BIGINT", "SMALLINT", "TINYINT":
+		return normalizeIntKey
+	case "DECIMAL", "NUMERIC", "FLOAT", "DOUBLE", "REAL":
+		return normalizeDecimalKey
+	case "STRING", "VARCHAR", "CHAR", "TEXT":
+		return normalizeStringKey
+	default:
+		return func(s string) string { return s }
+	}
+}
+
+func normalizeIntKey(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return s
+	}
+	n, err := strconv.ParseInt(s, 10, 64)
+	if err != nil {
+		return s
+	}
+	return strconv.FormatInt(n, 10)
+}
+
+func normalizeDecimalKey(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return s
+	}
+	// Strip trailing zeros after decimal point
+	if idx := strings.IndexByte(s, '.'); idx >= 0 {
+		frac := strings.TrimRight(s[idx+1:], "0")
+		if frac == "" {
+			return s[:idx]
+		}
+		return s[:idx+1] + frac
+	}
+	return s
+}
+
+func normalizeStringKey(s string) string {
+	return strings.TrimSpace(s)
 }
 
 func stripTableAlias(col string) string {

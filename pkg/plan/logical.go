@@ -65,14 +65,20 @@ func (n *LogicalProject) Type() string { return "LogicalProject" }
 func (n *LogicalProject) Children() []LogicalNode { return []LogicalNode{n.Child} }
 
 type LogicalJoin struct {
-	Left        LogicalNode
-	Right       LogicalNode
-	LeftColumn  string
-	RightColumn string
+	Left         LogicalNode
+	Right        LogicalNode
+	LeftColumn   string
+	RightColumn  string
+	JoinType     string // INNER, LEFT, RIGHT, FULL, SEMI, CROSS
+	NormalizeKey func(string) string // optional: normalizes join key values for type-aware comparison
 }
 
 func NewLogicalJoin(left, right LogicalNode, leftCol, rightCol string) *LogicalJoin {
-	return &LogicalJoin{Left: left, Right: right, LeftColumn: leftCol, RightColumn: rightCol}
+	return &LogicalJoin{Left: left, Right: right, LeftColumn: leftCol, RightColumn: rightCol, JoinType: "INNER"}
+}
+
+func NewLogicalJoinWithType(left, right LogicalNode, leftCol, rightCol, joinType string) *LogicalJoin {
+	return &LogicalJoin{Left: left, Right: right, LeftColumn: leftCol, RightColumn: rightCol, JoinType: joinType}
 }
 
 func (n *LogicalJoin) Type() string { return "LogicalJoin" }

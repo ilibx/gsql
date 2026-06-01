@@ -97,6 +97,11 @@ const (
 	LATERAL_KW
 	VIEW_KW
 	OUTER_KW
+	LEFT_KW
+	RIGHT_KW
+	FULL_KW
+	SEMI_KW
+	CROSS_KW
 )
 
 var keywords = map[string]TokenType{
@@ -147,6 +152,11 @@ var keywords = map[string]TokenType{
 	"current":     CURRENT_KW,
 	"lateral":     LATERAL_KW,
 	"view":        VIEW_KW,
+	"left":        LEFT_KW,
+	"right":       RIGHT_KW,
+	"full":        FULL_KW,
+	"semi":        SEMI_KW,
+	"cross":       CROSS_KW,
 	"outer":       OUTER_KW,
 }
 
@@ -250,7 +260,7 @@ func tokenName(t TokenType) string {
 	case SEMICOLON:
 		return ";"
 	case CREATE, TABLE, WITH, AS, INSERT, OVERWRITE, SELECT, FROM, WHERE, ORDER, BY, LIMIT, IS, NULL_KEYWORD, NOT, IN_KEYWORD, DISTINCT, EXTERNAL, OVER, PARTITION, VALUES, MINUS, PLUS, DIV,
-		UNION, CASE_KW, WHEN_KW, THEN_KW, ELSE_KW, END_KW, EXISTS_KW:
+		UNION, CASE_KW, WHEN_KW, THEN_KW, ELSE_KW, END_KW, EXISTS_KW, LEFT_KW, RIGHT_KW, FULL_KW, SEMI_KW, CROSS_KW:
 		return strings.ToUpper(t.String())
 	default:
 		if s := t.String(); s != "" {
@@ -358,6 +368,16 @@ func (t TokenType) String() string {
 		return "VIEW"
 	case OUTER_KW:
 		return "OUTER"
+	case LEFT_KW:
+		return "LEFT"
+	case RIGHT_KW:
+		return "RIGHT"
+	case FULL_KW:
+		return "FULL"
+	case SEMI_KW:
+		return "SEMI"
+	case CROSS_KW:
+		return "CROSS"
 	default:
 		return ""
 	}
@@ -842,10 +862,44 @@ func (p *Parser) parseSelectQuery() (*SelectQuery, error) {
 	}
 
 	var joins []JoinClause
-	for p.curIs(JOIN) {
+	for p.curIs(LEFT_KW) || p.curIs(RIGHT_KW) || p.curIs(FULL_KW) || p.curIs(SEMI_KW) || p.curIs(JOIN) || p.curIs(CROSS_KW) {
+		joinType := "INNER"
+		if p.curIs(CROSS_KW) {
+			joinType = "CROSS"
+			p.nextToken()
+		} else if p.curIs(SEMI_KW) {
+			joinType = "SEMI"
+			p.nextToken()
+		} else if p.curIs(LEFT_KW) {
+			p.nextToken()
+			if p.curIs(SEMI_KW) {
+				joinType = "SEMI"
+				p.nextToken()
+			} else {
+				joinType = "LEFT"
+				if p.curIs(OUTER_KW) {
+					p.nextToken()
+				}
+			}
+		} else if p.curIs(RIGHT_KW) {
+			joinType = "RIGHT"
+			p.nextToken()
+			if p.curIs(OUTER_KW) {
+				p.nextToken()
+			}
+		} else if p.curIs(FULL_KW) {
+			joinType = "FULL"
+			p.nextToken()
+			if p.curIs(OUTER_KW) {
+				p.nextToken()
+			}
+		}
+		if !p.curIs(JOIN) {
+			return nil, fmt.Errorf("expected JOIN, got %s", tokenName(p.cur.Type))
+		}
 		p.nextToken()
 		if p.cur.Type != IDENT {
-			return nil, fmt.Errorf("expected table name after JOIN")
+			return nil, fmt.Errorf("expected table name after %s JOIN", joinType)
 		}
 		rightTable := p.cur.Literal
 		var rightAlias string
@@ -857,23 +911,27 @@ func (p *Parser) parseSelectQuery() (*SelectQuery, error) {
 			rightAlias = p.cur.Literal
 			p.nextToken()
 		}
+		if joinType == "CROSS" {
+			joins = append(joins, JoinClause{RightTable: rightTable, RightAlias: rightAlias, JoinType: joinType})
+			continue
+		}
 		if p.cur.Type != ON {
-			return nil, fmt.Errorf("expected ON after JOIN table %s", rightTable)
+			return nil, fmt.Errorf("expected ON after %s JOIN table %s", joinType, rightTable)
 		}
 		p.nextToken()
 		leftCol, err := p.parseDottedIdentifier()
 		if err != nil {
-			return nil, fmt.Errorf("JOIN ON left side: %w", err)
+			return nil, fmt.Errorf("%s JOIN ON left side: %w", joinType, err)
 		}
 		if p.cur.Type != EQUAL {
-			return nil, fmt.Errorf("expected = in JOIN ON clause")
+			return nil, fmt.Errorf("expected = in %s JOIN ON clause", joinType)
 		}
 		p.nextToken()
 		rightCol, err := p.parseDottedIdentifier()
 		if err != nil {
-			return nil, fmt.Errorf("JOIN ON right side: %w", err)
+			return nil, fmt.Errorf("%s JOIN ON right side: %w", joinType, err)
 		}
-		joins = append(joins, JoinClause{RightTable: rightTable, RightAlias: rightAlias, LeftColumn: leftCol, RightColumn: rightCol})
+		joins = append(joins, JoinClause{RightTable: rightTable, RightAlias: rightAlias, LeftColumn: leftCol, RightColumn: rightCol, JoinType: joinType})
 	}
 
 	var lateralViews []LateralView

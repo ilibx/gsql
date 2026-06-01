@@ -93,6 +93,7 @@ type JoinClause struct {
 	RightAlias  string
 	LeftColumn  string
 	RightColumn string
+	JoinType    string // INNER, LEFT, RIGHT, FULL, SEMI, CROSS
 }
 
 type NullTestExpr struct {

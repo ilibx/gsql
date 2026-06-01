@@ -89,6 +89,11 @@ func TestGroupBy(t *testing.T)       { runTestSQL(t, "group_by", "basic", "test_
 func TestHaving(t *testing.T)        { runTestSQL(t, "having", "basic", "test_having.sql") }
 func TestJoin(t *testing.T)          { runTestSQL(t, "join", "basic", "test_join.sql") }
 func TestMultiJoin(t *testing.T)     { runTestSQL(t, "multi_join", "basic", "test_multi_join.sql") }
+func TestLeftJoin(t *testing.T)     { runTestSQL(t, "left_join", "basic", "test_left_join.sql") }
+func TestRightJoin(t *testing.T)    { runTestSQL(t, "right_join", "basic", "test_right_join.sql") }
+func TestFullJoin(t *testing.T)     { runTestSQL(t, "full_join", "basic", "test_full_join.sql") }
+func TestSemiJoin(t *testing.T)     { runTestSQL(t, "semi_join", "basic", "test_semi_join.sql") }
+func TestCrossJoin(t *testing.T)    { runTestSQL(t, "cross_join", "basic", "test_cross_join.sql") }
 func TestSubquery(t *testing.T)      { runTestSQL(t, "subquery", "basic", "test_subquery.sql") }
 func TestSubqueryExists(t *testing.T) { runTestSQL(t, "subquery_exists", "basic", "test_subquery_exists.sql") }
 func TestSubqueryIn(t *testing.T)    { runTestSQL(t, "subquery_in", "basic", "test_subquery_in.sql") }

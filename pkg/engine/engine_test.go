@@ -597,6 +597,740 @@ func TestEngineJoin(t *testing.T) {
 	}
 }
 
+func TestEngineLeftJoin(t *testing.T) {
+	dir := t.TempDir()
+	csvLeft := "1,alice\n2,bob\n3,carol\n"
+	csvRight := "1,100\n2,200\n4,400\n"
+	if err := os.WriteFile(filepath.Join(dir, "left.csv"), []byte(csvLeft), 0o644); err != nil {
+		t.Fatalf("write left csv failed: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "right.csv"), []byte(csvRight), 0o644); err != nil {
+		t.Fatalf("write right csv failed: %v", err)
+	}
+
+	cat := catalog.NewCatalog()
+	engine := NewEngine(cat)
+
+	leftTable := &catalog.Table{
+		Name:    "left_t",
+		Columns: []catalog.ColumnDef{{Name: "id", Type: "INT"}, {Name: "name", Type: "STRING"}},
+		WithOptions: map[string]string{
+			"storage": "local", "format": "csv", "path": dir, "file_pattern": "left.csv",
+		},
+	}
+	if err := cat.CreateTable(leftTable); err != nil {
+		t.Fatalf("create left_t failed: %v", err)
+	}
+	rightTable := &catalog.Table{
+		Name:    "right_t",
+		Columns: []catalog.ColumnDef{{Name: "user_id", Type: "INT"}, {Name: "amount", Type: "INT"}},
+		WithOptions: map[string]string{
+			"storage": "local", "format": "csv", "path": dir, "file_pattern": "right.csv",
+		},
+	}
+	if err := cat.CreateTable(rightTable); err != nil {
+		t.Fatalf("create right_t failed: %v", err)
+	}
+
+	t.Run("left join returns all left rows", func(t *testing.T) {
+		query := &parser.SelectQuery{
+			Columns: []string{"name", "amount"},
+			Table:   "left_t",
+			Joins: []parser.JoinClause{
+				{RightTable: "right_t", LeftColumn: "id", RightColumn: "user_id", JoinType: "LEFT"},
+			},
+		}
+		rows, err := engine.executeSelect(query)
+		if err != nil {
+			t.Fatalf("LEFT JOIN failed: %v", err)
+		}
+		if len(rows) != 3 {
+			t.Fatalf("expected 3 rows (2 matched + 1 unmatched left), got %d", len(rows))
+		}
+		found := map[string]string{}
+		for _, r := range rows {
+			found[r["name"]] = r["amount"]
+		}
+		if found["alice"] != "100" {
+			t.Errorf("expected alice=100, got %q", found["alice"])
+		}
+		if found["bob"] != "200" {
+			t.Errorf("expected bob=200, got %q", found["bob"])
+		}
+		if found["carol"] != "" {
+			t.Errorf("expected carol='' (unmatched), got %q", found["carol"])
+		}
+	})
+
+	t.Run("left join with reversed ON columns", func(t *testing.T) {
+		// Simulate the ON clause being written as "right.user_id = left.id"
+		query := &parser.SelectQuery{
+			Columns: []string{"name", "amount"},
+			Table:   "left_t",
+			Joins: []parser.JoinClause{
+				{RightTable: "right_t", LeftColumn: "user_id", RightColumn: "id", JoinType: "LEFT"},
+			},
+		}
+		rows, err := engine.executeSelect(query)
+		if err != nil {
+			t.Fatalf("LEFT JOIN (reversed ON) failed: %v", err)
+		}
+		if len(rows) != 3 {
+			t.Fatalf("expected 3 rows, got %d", len(rows))
+		}
+		found := map[string]string{}
+		for _, r := range rows {
+			found[r["name"]] = r["amount"]
+		}
+		if found["alice"] != "100" {
+			t.Errorf("expected alice=100, got %q", found["alice"])
+		}
+		if found["bob"] != "200" {
+			t.Errorf("expected bob=200, got %q", found["bob"])
+		}
+		if found["carol"] != "" {
+			t.Errorf("expected carol='' (unmatched), got %q", found["carol"])
+		}
+	})
+}
+
+func TestEngineRightJoin(t *testing.T) {
+	dir := t.TempDir()
+	csvLeft := "1,alice\n2,bob\n3,carol\n"
+	csvRight := "1,100\n2,200\n4,400\n"
+	if err := os.WriteFile(filepath.Join(dir, "left.csv"), []byte(csvLeft), 0o644); err != nil {
+		t.Fatalf("write left csv failed: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "right.csv"), []byte(csvRight), 0o644); err != nil {
+		t.Fatalf("write right csv failed: %v", err)
+	}
+
+	cat := catalog.NewCatalog()
+	engine := NewEngine(cat)
+
+	leftTable := &catalog.Table{
+		Name:    "left_t",
+		Columns: []catalog.ColumnDef{{Name: "id", Type: "INT"}, {Name: "name", Type: "STRING"}},
+		WithOptions: map[string]string{
+			"storage": "local", "format": "csv", "path": dir, "file_pattern": "left.csv",
+		},
+	}
+	if err := cat.CreateTable(leftTable); err != nil {
+		t.Fatalf("create left_t failed: %v", err)
+	}
+	rightTable := &catalog.Table{
+		Name:    "right_t",
+		Columns: []catalog.ColumnDef{{Name: "user_id", Type: "INT"}, {Name: "amount", Type: "INT"}},
+		WithOptions: map[string]string{
+			"storage": "local", "format": "csv", "path": dir, "file_pattern": "right.csv",
+		},
+	}
+	if err := cat.CreateTable(rightTable); err != nil {
+		t.Fatalf("create right_t failed: %v", err)
+	}
+
+	t.Run("right join normal ON", func(t *testing.T) {
+		query := &parser.SelectQuery{
+			Columns: []string{"name", "amount"},
+			Table:   "left_t",
+			Joins: []parser.JoinClause{
+				{RightTable: "right_t", LeftColumn: "id", RightColumn: "user_id", JoinType: "RIGHT"},
+			},
+		}
+		rows, err := engine.executeSelect(query)
+		if err != nil {
+			t.Fatalf("RIGHT JOIN failed: %v", err)
+		}
+		if len(rows) != 3 {
+			t.Fatalf("expected 3 rows (2 matched + 1 unmatched right), got %d", len(rows))
+		}
+		found := map[string]string{}
+		for _, r := range rows {
+			found[r["name"]] = r["amount"]
+		}
+		if found["alice"] != "100" {
+			t.Errorf("expected alice=100, got %q", found["alice"])
+		}
+		if found["bob"] != "200" {
+			t.Errorf("expected bob=200, got %q", found["bob"])
+		}
+		if found[""] != "400" {
+			t.Errorf("expected unmatched right row with amount=400, got %q", found[""])
+		}
+	})
+
+	t.Run("right join reversed ON", func(t *testing.T) {
+		query := &parser.SelectQuery{
+			Columns: []string{"name", "amount"},
+			Table:   "left_t",
+			Joins: []parser.JoinClause{
+				{RightTable: "right_t", LeftColumn: "user_id", RightColumn: "id", JoinType: "RIGHT"},
+			},
+		}
+		rows, err := engine.executeSelect(query)
+		if err != nil {
+			t.Fatalf("RIGHT JOIN (reversed ON) failed: %v", err)
+		}
+		if len(rows) != 3 {
+			t.Fatalf("expected 3 rows, got %d", len(rows))
+		}
+		found := map[string]string{}
+		for _, r := range rows {
+			found[r["name"]] = r["amount"]
+		}
+		if found["alice"] != "100" {
+			t.Errorf("expected alice=100, got %q", found["alice"])
+		}
+		if found["bob"] != "200" {
+			t.Errorf("expected bob=200, got %q", found["bob"])
+		}
+		if found[""] != "400" {
+			t.Errorf("expected unmatched right row with amount=400, got %q", found[""])
+		}
+	})
+}
+
+func TestEngineFullJoin(t *testing.T) {
+	dir := t.TempDir()
+	csvLeft := "1,alice\n2,bob\n3,carol\n"
+	csvRight := "1,100\n2,200\n4,400\n"
+	if err := os.WriteFile(filepath.Join(dir, "left.csv"), []byte(csvLeft), 0o644); err != nil {
+		t.Fatalf("write left csv failed: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "right.csv"), []byte(csvRight), 0o644); err != nil {
+		t.Fatalf("write right csv failed: %v", err)
+	}
+
+	cat := catalog.NewCatalog()
+	engine := NewEngine(cat)
+
+	leftTable := &catalog.Table{
+		Name:    "left_t",
+		Columns: []catalog.ColumnDef{{Name: "id", Type: "INT"}, {Name: "name", Type: "STRING"}},
+		WithOptions: map[string]string{
+			"storage": "local", "format": "csv", "path": dir, "file_pattern": "left.csv",
+		},
+	}
+	if err := cat.CreateTable(leftTable); err != nil {
+		t.Fatalf("create left_t failed: %v", err)
+	}
+	rightTable := &catalog.Table{
+		Name:    "right_t",
+		Columns: []catalog.ColumnDef{{Name: "user_id", Type: "INT"}, {Name: "amount", Type: "INT"}},
+		WithOptions: map[string]string{
+			"storage": "local", "format": "csv", "path": dir, "file_pattern": "right.csv",
+		},
+	}
+	if err := cat.CreateTable(rightTable); err != nil {
+		t.Fatalf("create right_t failed: %v", err)
+	}
+
+	t.Run("full join normal ON", func(t *testing.T) {
+		query := &parser.SelectQuery{
+			Columns: []string{"name", "amount"},
+			Table:   "left_t",
+			Joins: []parser.JoinClause{
+				{RightTable: "right_t", LeftColumn: "id", RightColumn: "user_id", JoinType: "FULL"},
+			},
+		}
+		rows, err := engine.executeSelect(query)
+		if err != nil {
+			t.Fatalf("FULL JOIN failed: %v", err)
+		}
+		if len(rows) != 4 {
+			t.Fatalf("expected 4 rows, got %d", len(rows))
+		}
+		found := map[string]string{}
+		for _, r := range rows {
+			found[r["name"]] = r["amount"]
+		}
+		if found["alice"] != "100" {
+			t.Errorf("expected alice=100, got %q", found["alice"])
+		}
+		if found["bob"] != "200" {
+			t.Errorf("expected bob=200, got %q", found["bob"])
+		}
+		if found["carol"] != "" {
+			t.Errorf("expected carol='' (unmatched left), got %q", found["carol"])
+		}
+		if found[""] != "400" {
+			t.Errorf("expected unmatched right row with amount=400, got %q", found[""])
+		}
+	})
+
+	t.Run("full join reversed ON", func(t *testing.T) {
+		query := &parser.SelectQuery{
+			Columns: []string{"name", "amount"},
+			Table:   "left_t",
+			Joins: []parser.JoinClause{
+				{RightTable: "right_t", LeftColumn: "user_id", RightColumn: "id", JoinType: "FULL"},
+			},
+		}
+		rows, err := engine.executeSelect(query)
+		if err != nil {
+			t.Fatalf("FULL JOIN (reversed ON) failed: %v", err)
+		}
+		if len(rows) != 4 {
+			t.Fatalf("expected 4 rows, got %d", len(rows))
+		}
+		found := map[string]string{}
+		for _, r := range rows {
+			found[r["name"]] = r["amount"]
+		}
+		if found["alice"] != "100" {
+			t.Errorf("expected alice=100, got %q", found["alice"])
+		}
+		if found["bob"] != "200" {
+			t.Errorf("expected bob=200, got %q", found["bob"])
+		}
+		if found["carol"] != "" {
+			t.Errorf("expected carol='' (unmatched left), got %q", found["carol"])
+		}
+		if found[""] != "400" {
+			t.Errorf("expected unmatched right row with amount=400, got %q", found[""])
+		}
+	})
+}
+
+func TestEngineSemiJoin(t *testing.T) {
+	dir := t.TempDir()
+	csvLeft := "1,alice\n2,bob\n3,carol\n"
+	csvRight := "1,100\n2,200\n4,400\n"
+	if err := os.WriteFile(filepath.Join(dir, "left.csv"), []byte(csvLeft), 0o644); err != nil {
+		t.Fatalf("write left csv failed: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "right.csv"), []byte(csvRight), 0o644); err != nil {
+		t.Fatalf("write right csv failed: %v", err)
+	}
+
+	cat := catalog.NewCatalog()
+	engine := NewEngine(cat)
+
+	leftTable := &catalog.Table{
+		Name:    "left_t",
+		Columns: []catalog.ColumnDef{{Name: "id", Type: "INT"}, {Name: "name", Type: "STRING"}},
+		WithOptions: map[string]string{
+			"storage": "local", "format": "csv", "path": dir, "file_pattern": "left.csv",
+		},
+	}
+	if err := cat.CreateTable(leftTable); err != nil {
+		t.Fatalf("create left_t failed: %v", err)
+	}
+	rightTable := &catalog.Table{
+		Name:    "right_t",
+		Columns: []catalog.ColumnDef{{Name: "user_id", Type: "INT"}, {Name: "amount", Type: "INT"}},
+		WithOptions: map[string]string{
+			"storage": "local", "format": "csv", "path": dir, "file_pattern": "right.csv",
+		},
+	}
+	if err := cat.CreateTable(rightTable); err != nil {
+		t.Fatalf("create right_t failed: %v", err)
+	}
+
+	query := &parser.SelectQuery{
+		Columns: []string{"name"},
+		Table:   "left_t",
+		Joins: []parser.JoinClause{
+			{RightTable: "right_t", LeftColumn: "id", RightColumn: "user_id", JoinType: "SEMI"},
+		},
+	}
+	rows, err := engine.executeSelect(query)
+	if err != nil {
+		t.Fatalf("SEMI JOIN failed: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("expected 2 rows (alice, bob), got %d", len(rows))
+	}
+	if rows[0]["name"] != "alice" && rows[1]["name"] != "alice" {
+		t.Error("expected alice in SEMI JOIN result")
+	}
+	if rows[0]["name"] != "bob" && rows[1]["name"] != "bob" {
+		t.Error("expected bob in SEMI JOIN result")
+	}
+	// Carol should NOT be in result
+	for _, r := range rows {
+		if r["name"] == "carol" {
+			t.Error("carol should not be in SEMI JOIN result")
+		}
+	}
+}
+
+func TestEngineCrossJoin(t *testing.T) {
+	dir := t.TempDir()
+	csvLeft := "1,alice\n2,bob\n"
+	csvRight := "x\ny\n"
+	if err := os.WriteFile(filepath.Join(dir, "left.csv"), []byte(csvLeft), 0o644); err != nil {
+		t.Fatalf("write left csv failed: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "right.csv"), []byte(csvRight), 0o644); err != nil {
+		t.Fatalf("write right csv failed: %v", err)
+	}
+
+	cat := catalog.NewCatalog()
+	engine := NewEngine(cat)
+
+	leftTable := &catalog.Table{
+		Name:    "left_t",
+		Columns: []catalog.ColumnDef{{Name: "id", Type: "INT"}, {Name: "name", Type: "STRING"}},
+		WithOptions: map[string]string{
+			"storage": "local", "format": "csv", "path": dir, "file_pattern": "left.csv",
+		},
+	}
+	if err := cat.CreateTable(leftTable); err != nil {
+		t.Fatalf("create left_t failed: %v", err)
+	}
+	rightTable := &catalog.Table{
+		Name:    "right_t",
+		Columns: []catalog.ColumnDef{{Name: "val", Type: "STRING"}},
+		WithOptions: map[string]string{
+			"storage": "local", "format": "csv", "path": dir, "file_pattern": "right.csv",
+		},
+	}
+	if err := cat.CreateTable(rightTable); err != nil {
+		t.Fatalf("create right_t failed: %v", err)
+	}
+
+	query := &parser.SelectQuery{
+		Columns: []string{"name", "val"},
+		Table:   "left_t",
+		Joins: []parser.JoinClause{
+			{RightTable: "right_t", JoinType: "CROSS"},
+		},
+	}
+	rows, err := engine.executeSelect(query)
+	if err != nil {
+		t.Fatalf("CROSS JOIN failed: %v", err)
+	}
+	if len(rows) != 4 {
+		t.Fatalf("expected 4 rows (2*2), got %d", len(rows))
+	}
+}
+
+func TestEngineJoinStringKey(t *testing.T) {
+	dir := t.TempDir()
+	csvLeft := "alice,25\nbob,30\ncarol,35\n"
+	csvRight := "alice,100\nbob,200\ndave,400\n"
+	if err := os.WriteFile(filepath.Join(dir, "left.csv"), []byte(csvLeft), 0o644); err != nil {
+		t.Fatalf("write left csv failed: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "right.csv"), []byte(csvRight), 0o644); err != nil {
+		t.Fatalf("write right csv failed: %v", err)
+	}
+
+	cat := catalog.NewCatalog()
+	engine := NewEngine(cat)
+
+	leftTable := &catalog.Table{
+		Name:    "left_t",
+		Columns: []catalog.ColumnDef{{Name: "name", Type: "STRING"}, {Name: "age", Type: "INT"}},
+		WithOptions: map[string]string{
+			"storage": "local", "format": "csv", "path": dir, "file_pattern": "left.csv",
+		},
+	}
+	if err := cat.CreateTable(leftTable); err != nil {
+		t.Fatalf("create left_t failed: %v", err)
+	}
+	rightTable := &catalog.Table{
+		Name:    "right_t",
+		Columns: []catalog.ColumnDef{{Name: "user_name", Type: "STRING"}, {Name: "amount", Type: "INT"}},
+		WithOptions: map[string]string{
+			"storage": "local", "format": "csv", "path": dir, "file_pattern": "right.csv",
+		},
+	}
+	if err := cat.CreateTable(rightTable); err != nil {
+		t.Fatalf("create right_t failed: %v", err)
+	}
+
+	t.Run("left join on STRING key", func(t *testing.T) {
+		query := &parser.SelectQuery{
+			Columns: []string{"name", "amount"},
+			Table:   "left_t",
+			Joins: []parser.JoinClause{
+				{RightTable: "right_t", LeftColumn: "name", RightColumn: "user_name", JoinType: "LEFT"},
+			},
+		}
+		rows, err := engine.executeSelect(query)
+		if err != nil {
+			t.Fatalf("LEFT JOIN on STRING failed: %v", err)
+		}
+		if len(rows) != 3 {
+			t.Fatalf("expected 3 rows, got %d", len(rows))
+		}
+		found := map[string]string{}
+		for _, r := range rows {
+			found[r["name"]] = r["amount"]
+		}
+		if found["alice"] != "100" {
+			t.Errorf("expected alice=100, got %q", found["alice"])
+		}
+		if found["bob"] != "200" {
+			t.Errorf("expected bob=200, got %q", found["bob"])
+		}
+		if found["carol"] != "" {
+			t.Errorf("expected carol='' (unmatched), got %q", found["carol"])
+		}
+	})
+
+	t.Run("inner join on STRING key with reversed ON", func(t *testing.T) {
+		query := &parser.SelectQuery{
+			Columns: []string{"name", "amount"},
+			Table:   "left_t",
+			Joins: []parser.JoinClause{
+				{RightTable: "right_t", LeftColumn: "user_name", RightColumn: "name", JoinType: "INNER"},
+			},
+		}
+		rows, err := engine.executeSelect(query)
+		if err != nil {
+			t.Fatalf("INNER JOIN on STRING (reversed ON) failed: %v", err)
+		}
+		if len(rows) != 2 {
+			t.Fatalf("expected 2 rows, got %d", len(rows))
+		}
+	})
+}
+
+func TestEngineJoinDecimalKey(t *testing.T) {
+	dir := t.TempDir()
+	csvLeft := "1,10.50\n2,20.00\n3,30.75\n"
+	csvRight := "10.50,prod_a\n20.00,prod_b\n40.00,prod_c\n"
+	if err := os.WriteFile(filepath.Join(dir, "left.csv"), []byte(csvLeft), 0o644); err != nil {
+		t.Fatalf("write left csv failed: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "right.csv"), []byte(csvRight), 0o644); err != nil {
+		t.Fatalf("write right csv failed: %v", err)
+	}
+
+	cat := catalog.NewCatalog()
+	engine := NewEngine(cat)
+
+	leftTable := &catalog.Table{
+		Name:    "left_t",
+		Columns: []catalog.ColumnDef{{Name: "id", Type: "INT"}, {Name: "price", Type: "DECIMAL(10,2)"}},
+		WithOptions: map[string]string{
+			"storage": "local", "format": "csv", "path": dir, "file_pattern": "left.csv",
+		},
+	}
+	if err := cat.CreateTable(leftTable); err != nil {
+		t.Fatalf("create left_t failed: %v", err)
+	}
+	rightTable := &catalog.Table{
+		Name:    "right_t",
+		Columns: []catalog.ColumnDef{{Name: "item_price", Type: "DECIMAL(10,2)"}, {Name: "product", Type: "STRING"}},
+		WithOptions: map[string]string{
+			"storage": "local", "format": "csv", "path": dir, "file_pattern": "right.csv",
+		},
+	}
+	if err := cat.CreateTable(rightTable); err != nil {
+		t.Fatalf("create right_t failed: %v", err)
+	}
+
+	t.Run("left join on DECIMAL key", func(t *testing.T) {
+		query := &parser.SelectQuery{
+			Columns: []string{"id", "product"},
+			Table:   "left_t",
+			Joins: []parser.JoinClause{
+				{RightTable: "right_t", LeftColumn: "price", RightColumn: "item_price", JoinType: "LEFT"},
+			},
+		}
+		rows, err := engine.executeSelect(query)
+		if err != nil {
+			t.Fatalf("LEFT JOIN on DECIMAL failed: %v", err)
+		}
+		if len(rows) != 3 {
+			t.Fatalf("expected 3 rows, got %d", len(rows))
+		}
+		found := map[string]string{}
+		for _, r := range rows {
+			found[r["id"]] = r["product"]
+		}
+		if found["1"] != "prod_a" {
+			t.Errorf("expected id=1 -> prod_a, got %q", found["1"])
+		}
+		if found["2"] != "prod_b" {
+			t.Errorf("expected id=2 -> prod_b, got %q", found["2"])
+		}
+		if found["3"] != "" {
+			t.Errorf("expected id=3 -> '' (unmatched), got %q", found["3"])
+		}
+	})
+
+	t.Run("inner join on DECIMAL with reversed ON", func(t *testing.T) {
+		query := &parser.SelectQuery{
+			Columns: []string{"id", "product"},
+			Table:   "left_t",
+			Joins: []parser.JoinClause{
+				{RightTable: "right_t", LeftColumn: "item_price", RightColumn: "price", JoinType: "INNER"},
+			},
+		}
+		rows, err := engine.executeSelect(query)
+		if err != nil {
+			t.Fatalf("INNER JOIN on DECIMAL (reversed ON) failed: %v", err)
+		}
+		if len(rows) != 2 {
+			t.Fatalf("expected 2 rows, got %d", len(rows))
+		}
+	})
+}
+
+func TestEngineJoinArithmeticExpr(t *testing.T) {
+	dir := t.TempDir()
+	csvLeft := "1,10,alice\n2,20,bob\n3,30,carol\n"
+	csvRight := "1,0.9\n2,0.8\n4,0.7\n"
+	if err := os.WriteFile(filepath.Join(dir, "left.csv"), []byte(csvLeft), 0o644); err != nil {
+		t.Fatalf("write left csv failed: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "right.csv"), []byte(csvRight), 0o644); err != nil {
+		t.Fatalf("write right csv failed: %v", err)
+	}
+
+	cat := catalog.NewCatalog()
+	eng := NewEngine(cat)
+
+	leftTable := &catalog.Table{
+		Name:    "left_t",
+		Columns: []catalog.ColumnDef{{Name: "id", Type: "INT"}, {Name: "amount", Type: "INT"}, {Name: "name", Type: "STRING"}},
+		WithOptions: map[string]string{
+			"storage": "local", "format": "csv", "path": dir, "file_pattern": "left.csv",
+		},
+	}
+	if err := cat.CreateTable(leftTable); err != nil {
+		t.Fatalf("create left_t failed: %v", err)
+	}
+	rightTable := &catalog.Table{
+		Name:    "right_t",
+		Columns: []catalog.ColumnDef{{Name: "ref_id", Type: "INT"}, {Name: "discount", Type: "DECIMAL(10,2)"}},
+		WithOptions: map[string]string{
+			"storage": "local", "format": "csv", "path": dir, "file_pattern": "right.csv",
+		},
+	}
+	if err := cat.CreateTable(rightTable); err != nil {
+		t.Fatalf("create right_t failed: %v", err)
+	}
+
+	t.Run("arithmetic with table-prefixed columns", func(t *testing.T) {
+		// Simulates: SELECT l.amount * r.discount AS final FROM left_t l JOIN right_t r ON l.id = r.ref_id
+		// Using table-prefixed columns in the arithmetic expression to verify stripColAlias works
+		query := &parser.SelectQuery{
+			Table:   "left_t",
+			TableAlias: "l",
+			Columns: []string{"l.amount * r.discount"},
+			ColumnExprs: []parser.Expression{
+				&parser.BinaryExpr{
+					Left:  &parser.ColumnRef{Name: "l.amount"},
+					Operator: "*",
+					Right: &parser.ColumnRef{Name: "r.discount"},
+				},
+			},
+			Joins: []parser.JoinClause{
+				{RightTable: "right_t", RightAlias: "r", LeftColumn: "id", RightColumn: "ref_id", JoinType: "INNER"},
+			},
+		}
+		rows, err := eng.executeSelect(query)
+		if err != nil {
+			t.Fatalf("arithmetic expression query failed: %v", err)
+		}
+		if len(rows) != 2 {
+			t.Fatalf("expected 2 rows, got %d", len(rows))
+		}
+		// l.amount=10 * r.discount=0.9 = 9, l.amount=20 * r.discount=0.8 = 16
+		// The project node evaluates the expression, result key is stripped to "amount * r.discount"
+		for _, r := range rows {
+			t.Logf("row: %v", r)
+		}
+	})
+}
+
+func TestEngineJoinKeyNormalization(t *testing.T) {
+	// Test that type-aware normalization allows differently formatted
+	// representations of the same logical value to match in JOIN.
+	dir := t.TempDir()
+	// Left: INT leading zero, DECIMAL trailing zero, STRING with spaces
+	csvLeft := "001,10.50, alice \n002,20.00, bob \n003,30.75, carol \n"
+	// Right: INT no leading zero, DECIMAL no trailing zero, STRING trimmed (or vice versa)
+	csvRight := "1,10.5,alice\n2,20,bob\n4,40.00,dave\n"
+	if err := os.WriteFile(filepath.Join(dir, "left.csv"), []byte(csvLeft), 0o644); err != nil {
+		t.Fatalf("write left csv failed: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "right.csv"), []byte(csvRight), 0o644); err != nil {
+		t.Fatalf("write right csv failed: %v", err)
+	}
+
+	cat := catalog.NewCatalog()
+	eng := NewEngine(cat)
+
+	leftTable := &catalog.Table{
+		Name:    "left_t",
+		Columns: []catalog.ColumnDef{{Name: "id", Type: "INT"}, {Name: "price", Type: "DECIMAL(10,2)"}, {Name: "name", Type: "STRING"}},
+		WithOptions: map[string]string{
+			"storage": "local", "format": "csv", "path": dir, "file_pattern": "left.csv",
+		},
+	}
+	if err := cat.CreateTable(leftTable); err != nil {
+		t.Fatalf("create left_t failed: %v", err)
+	}
+	rightTable := &catalog.Table{
+		Name:    "right_t",
+		Columns: []catalog.ColumnDef{{Name: "ref_id", Type: "INT"}, {Name: "ref_price", Type: "DECIMAL(10,2)"}, {Name: "ref_name", Type: "STRING"}},
+		WithOptions: map[string]string{
+			"storage": "local", "format": "csv", "path": dir, "file_pattern": "right.csv",
+		},
+	}
+	if err := cat.CreateTable(rightTable); err != nil {
+		t.Fatalf("create right_t failed: %v", err)
+	}
+
+	t.Run("INT normalization: 001 matches 1", func(t *testing.T) {
+		query := &parser.SelectQuery{
+			Columns: []string{"price", "ref_name"},
+			Table:   "left_t",
+			Joins: []parser.JoinClause{
+				{RightTable: "right_t", LeftColumn: "id", RightColumn: "ref_id", JoinType: "INNER"},
+			},
+		}
+		rows, err := eng.executeSelect(query)
+		if err != nil {
+			t.Fatalf("INNER JOIN on INT with normalization failed: %v", err)
+		}
+		if len(rows) != 2 {
+			t.Fatalf("expected 2 matched rows, got %d", len(rows))
+		}
+	})
+
+	t.Run("DECIMAL normalization: 10.50 matches 10.5, 20.00 matches 20", func(t *testing.T) {
+		query := &parser.SelectQuery{
+			Columns: []string{"name", "ref_name"},
+			Table:   "left_t",
+			Joins: []parser.JoinClause{
+				{RightTable: "right_t", LeftColumn: "price", RightColumn: "ref_price", JoinType: "INNER"},
+			},
+		}
+		rows, err := eng.executeSelect(query)
+		if err != nil {
+			t.Fatalf("INNER JOIN on DECIMAL with normalization failed: %v", err)
+		}
+		if len(rows) != 2 {
+			t.Fatalf("expected 2 matched rows, got %d", len(rows))
+		}
+	})
+
+	t.Run("STRING normalization: spaces trimmed", func(t *testing.T) {
+		query := &parser.SelectQuery{
+			Columns: []string{"name", "ref_name"},
+			Table:   "left_t",
+			Joins: []parser.JoinClause{
+				{RightTable: "right_t", LeftColumn: "name", RightColumn: "ref_name", JoinType: "INNER"},
+			},
+		}
+		rows, err := eng.executeSelect(query)
+		if err != nil {
+			t.Fatalf("INNER JOIN on STRING with normalization failed: %v", err)
+		}
+		if len(rows) != 2 {
+			t.Fatalf("expected 2 matched rows, got %d", len(rows))
+		}
+	})
+}
+
 func TestEngineJoinWithWhere(t *testing.T) {
 	dir := t.TempDir()
 	usersCSV := "1,alice,25\n2,bob,30\n"

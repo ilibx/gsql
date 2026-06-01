@@ -401,6 +401,138 @@ func TestParseJoin(t *testing.T) {
 	}
 }
 
+func TestParseLeftJoin(t *testing.T) {
+	sql := `SELECT * FROM t1 LEFT JOIN t2 ON t1.id = t2.id;`
+	stmts, err := NewParser().Parse(sql)
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+	if len(stmts) != 1 {
+		t.Fatalf("expected 1 statement, got %d", len(stmts))
+	}
+	sel := stmts[0].(*SelectStmt)
+	if len(sel.Query.Joins) != 1 {
+		t.Fatalf("expected 1 JOIN, got %d", len(sel.Query.Joins))
+	}
+	if sel.Query.Joins[0].JoinType != "LEFT" {
+		t.Errorf("expected JoinType LEFT, got %s", sel.Query.Joins[0].JoinType)
+	}
+}
+
+func TestParseRightJoin(t *testing.T) {
+	sql := `SELECT * FROM t1 RIGHT JOIN t2 ON t1.id = t2.id;`
+	stmts, err := NewParser().Parse(sql)
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+	if len(stmts) != 1 {
+		t.Fatalf("expected 1 statement, got %d", len(stmts))
+	}
+	sel := stmts[0].(*SelectStmt)
+	if len(sel.Query.Joins) != 1 {
+		t.Fatalf("expected 1 JOIN, got %d", len(sel.Query.Joins))
+	}
+	if sel.Query.Joins[0].JoinType != "RIGHT" {
+		t.Errorf("expected JoinType RIGHT, got %s", sel.Query.Joins[0].JoinType)
+	}
+}
+
+func TestParseFullJoin(t *testing.T) {
+	sql := `SELECT * FROM t1 FULL JOIN t2 ON t1.id = t2.id;`
+	stmts, err := NewParser().Parse(sql)
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+	if len(stmts) != 1 {
+		t.Fatalf("expected 1 statement, got %d", len(stmts))
+	}
+	sel := stmts[0].(*SelectStmt)
+	if len(sel.Query.Joins) != 1 {
+		t.Fatalf("expected 1 JOIN, got %d", len(sel.Query.Joins))
+	}
+	if sel.Query.Joins[0].JoinType != "FULL" {
+		t.Errorf("expected JoinType FULL, got %s", sel.Query.Joins[0].JoinType)
+	}
+}
+
+func TestParseSemiJoin(t *testing.T) {
+	sql := `SELECT * FROM t1 SEMI JOIN t2 ON t1.id = t2.id;`
+	stmts, err := NewParser().Parse(sql)
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+	if len(stmts) != 1 {
+		t.Fatalf("expected 1 statement, got %d", len(stmts))
+	}
+	sel := stmts[0].(*SelectStmt)
+	if len(sel.Query.Joins) != 1 {
+		t.Fatalf("expected 1 JOIN, got %d", len(sel.Query.Joins))
+	}
+	if sel.Query.Joins[0].JoinType != "SEMI" {
+		t.Errorf("expected JoinType SEMI, got %s", sel.Query.Joins[0].JoinType)
+	}
+}
+
+func TestParseCrossJoin(t *testing.T) {
+	sql := `SELECT * FROM t1 CROSS JOIN t2;`
+	stmts, err := NewParser().Parse(sql)
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+	if len(stmts) != 1 {
+		t.Fatalf("expected 1 statement, got %d", len(stmts))
+	}
+	sel := stmts[0].(*SelectStmt)
+	if len(sel.Query.Joins) != 1 {
+		t.Fatalf("expected 1 JOIN, got %d", len(sel.Query.Joins))
+	}
+	if sel.Query.Joins[0].JoinType != "CROSS" {
+		t.Errorf("expected JoinType CROSS, got %s", sel.Query.Joins[0].JoinType)
+	}
+	if sel.Query.Joins[0].LeftColumn != "" {
+		t.Errorf("expected empty LeftColumn for CROSS JOIN, got %s", sel.Query.Joins[0].LeftColumn)
+	}
+	if sel.Query.Joins[0].RightColumn != "" {
+		t.Errorf("expected empty RightColumn for CROSS JOIN, got %s", sel.Query.Joins[0].RightColumn)
+	}
+}
+
+func TestParseLeftOuterJoin(t *testing.T) {
+	sql := `SELECT * FROM t1 LEFT OUTER JOIN t2 ON t1.id = t2.id;`
+	stmts, err := NewParser().Parse(sql)
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+	if len(stmts) != 1 {
+		t.Fatalf("expected 1 statement, got %d", len(stmts))
+	}
+	sel := stmts[0].(*SelectStmt)
+	if len(sel.Query.Joins) != 1 {
+		t.Fatalf("expected 1 JOIN, got %d", len(sel.Query.Joins))
+	}
+	if sel.Query.Joins[0].JoinType != "LEFT" {
+		t.Errorf("expected JoinType LEFT, got %s", sel.Query.Joins[0].JoinType)
+	}
+}
+
+func TestParseLeftSemiJoin(t *testing.T) {
+	sql := `SELECT * FROM t1 LEFT SEMI JOIN t2 ON t1.id = t2.id;`
+	stmts, err := NewParser().Parse(sql)
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+	if len(stmts) != 1 {
+		t.Fatalf("expected 1 statement, got %d", len(stmts))
+	}
+	sel := stmts[0].(*SelectStmt)
+	if len(sel.Query.Joins) != 1 {
+		t.Fatalf("expected 1 JOIN, got %d", len(sel.Query.Joins))
+	}
+	if sel.Query.Joins[0].JoinType != "SEMI" {
+		t.Errorf("expected JoinType SEMI (left semi), got %s", sel.Query.Joins[0].JoinType)
+	}
+}
+
 func TestParseMultipleJoins(t *testing.T) {
 	sql := `SELECT * FROM t1 JOIN t2 ON t1.id = t2.id JOIN t3 ON t2.id = t3.id;`
 

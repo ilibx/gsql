@@ -143,7 +143,9 @@ func reorderJoins(node LogicalNode, tables map[string]*catalog.Table) LogicalNod
 	// If both sides have known costs and right is larger than left, swap.
 	// Hash join benefits from the smaller side being the build (right) side.
 	if !math.IsInf(leftRows, 1) && !math.IsInf(rightRows, 1) && rightRows > leftRows {
-		return NewLogicalJoin(join.Right, join.Left, join.RightColumn, join.LeftColumn)
+		swapped := NewLogicalJoinWithType(join.Right, join.Left, join.RightColumn, join.LeftColumn, join.JoinType)
+		swapped.NormalizeKey = join.NormalizeKey
+		return swapped
 	}
 	return node
 }
@@ -395,7 +397,9 @@ func rebuildNode(node LogicalNode, children []LogicalNode) LogicalNode {
 		if len(children) != 2 {
 			return node
 		}
-		return NewLogicalJoin(children[0], children[1], n.LeftColumn, n.RightColumn)
+		rebuilt := NewLogicalJoinWithType(children[0], children[1], n.LeftColumn, n.RightColumn, n.JoinType)
+		rebuilt.NormalizeKey = n.NormalizeKey
+		return rebuilt
 	case *LogicalAggregate:
 		if len(children) != 1 {
 			return node

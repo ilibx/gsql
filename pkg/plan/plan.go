@@ -469,14 +469,20 @@ func (n *LateralViewExplodeNode) Explain(indent int) string {
 }
 
 type JoinNode struct {
-	Left        PlanNode
-	Right       PlanNode
-	LeftColumn  string
-	RightColumn string
+	Left         PlanNode
+	Right        PlanNode
+	LeftColumn   string
+	RightColumn  string
+	JoinType     string // INNER, LEFT, RIGHT, FULL, SEMI, CROSS
+	NormalizeKey func(string) string // optional: normalizes join key values for type-aware comparison
 }
 
 func NewJoinNode(left, right PlanNode, leftCol, rightCol string) *JoinNode {
-	return &JoinNode{Left: left, Right: right, LeftColumn: leftCol, RightColumn: rightCol}
+	return &JoinNode{Left: left, Right: right, LeftColumn: leftCol, RightColumn: rightCol, JoinType: "INNER"}
+}
+
+func NewJoinNodeWithType(left, right PlanNode, leftCol, rightCol, joinType string) *JoinNode {
+	return &JoinNode{Left: left, Right: right, LeftColumn: leftCol, RightColumn: rightCol, JoinType: joinType}
 }
 
 func (n *JoinNode) Type() string {
@@ -493,27 +499,18 @@ func (n *JoinNode) Execute() ([]storage.Row, error) {
 		return nil, err
 	}
 
-	// Use the shorter side for building the hash map
-	// Use local variables instead of modifying node fields for concurrency safety
 	leftCol := n.LeftColumn
 	rightCol := n.RightColumn
 
-	if len(leftRows) > len(rightRows) {
-		leftRows, rightRows = rightRows, leftRows
-		leftCol, rightCol = rightCol, leftCol
+	normalize := n.NormalizeKey
+	if normalize == nil {
+		normalize = func(s string) string { return s }
 	}
 
-	hash := make(map[string][]storage.Row, len(rightRows))
-	for _, row := range rightRows {
-		key := row[rightCol]
-		hash[key] = append(hash[key], row)
-	}
-
-	var result []storage.Row
-	for _, lr := range leftRows {
-		key := lr[leftCol]
-		if matched, ok := hash[key]; ok {
-			for _, rr := range matched {
+	if n.JoinType == "CROSS" {
+		var result []storage.Row
+		for _, lr := range leftRows {
+			for _, rr := range rightRows {
 				merged := make(storage.Row, len(lr)+len(rr))
 				for k, v := range lr {
 					merged[k] = v
@@ -524,8 +521,64 @@ func (n *JoinNode) Execute() ([]storage.Row, error) {
 				result = append(result, merged)
 			}
 		}
+		return result, nil
 	}
+
+	// Build hash on the right side
+	hash := make(map[string][]storage.Row, len(rightRows))
+	for _, row := range rightRows {
+		key := normalize(row[rightCol])
+		hash[key] = append(hash[key], row)
+	}
+
+	// Track which left and right keys were matched
+	matchedKeys := make(map[string]bool)
+
+	var result []storage.Row
+	for _, lr := range leftRows {
+		key := normalize(lr[leftCol])
+		if matched, ok := hash[key]; ok {
+			matchedKeys[key] = true
+			if n.JoinType == "SEMI" {
+				result = append(result, copyRow(lr))
+				continue
+			}
+			for _, rr := range matched {
+				merged := make(storage.Row, len(lr)+len(rr))
+				for k, v := range lr {
+					merged[k] = v
+				}
+				for k, v := range rr {
+					merged[k] = v
+				}
+				result = append(result, merged)
+			}
+		} else if n.JoinType == "LEFT" || n.JoinType == "FULL" {
+			result = append(result, copyRow(lr))
+		}
+	}
+
+	// RIGHT JOIN / FULL JOIN: add unmatched right rows with NULL left
+	if n.JoinType == "RIGHT" || n.JoinType == "FULL" {
+		for key, rows := range hash {
+			if matchedKeys[key] {
+				continue
+			}
+			for _, rr := range rows {
+				result = append(result, copyRow(rr))
+			}
+		}
+	}
+
 	return result, nil
+}
+
+func copyRow(row storage.Row) storage.Row {
+	r := make(storage.Row, len(row))
+	for k, v := range row {
+		r[k] = v
+	}
+	return r
 }
 
 func (n *JoinNode) Explain(indent int) string {
@@ -698,14 +751,14 @@ func evaluateExpression(row storage.Row, expr parser.Expression) bool {
 			if v.Expr != nil {
 				left = evaluateExpressionValue(row, v.Expr)
 			} else {
-				left = row[v.Column]
+				left = row[stripColAlias(v.Column)]
 			}
 		} else {
-			left = row[v.Column]
+			left = row[stripColAlias(v.Column)]
 		}
 		var right string
 		if v.RightColumn != "" {
-			right = row[v.RightColumn]
+			right = row[stripColAlias(v.RightColumn)]
 		} else {
 			right = v.Value
 		}
@@ -736,13 +789,13 @@ func evaluateExpression(row storage.Row, expr parser.Expression) bool {
 			return false
 		}
 	case *parser.NullTestExpr:
-		val := row[v.Column]
+		val := row[stripColAlias(v.Column)]
 		if v.IsNull {
 			return val == ""
 		}
 		return val != ""
 	case *parser.InExpr:
-		val := row[v.Column]
+		val := row[stripColAlias(v.Column)]
 		if v.Not {
 			return !stringInSlice(val, v.Values)
 		}
@@ -773,23 +826,34 @@ func evaluateExpression(row storage.Row, expr parser.Expression) bool {
 	}
 }
 
+func stripColAlias(col string) string {
+	if idx := strings.IndexByte(col, '.'); idx >= 0 {
+		// ensure it's not a decimal number
+		if idx > 0 && col[idx-1] >= '0' && col[idx-1] <= '9' && idx+1 < len(col) && col[idx+1] >= '0' && col[idx+1] <= '9' {
+			return col
+		}
+		return col[idx+1:]
+	}
+	return col
+}
+
 func evaluateExpressionValue(row storage.Row, expr parser.Expression) string {
 	switch v := expr.(type) {
 	case *parser.ColumnRef:
-		return row[v.Name]
+		return row[stripColAlias(v.Name)]
 	case *parser.ComparisonExpr:
 		if v.Expr != nil {
 			return evaluateExpressionValue(row, v.Expr)
 		}
 		if v.RightColumn != "" {
-			return row[v.RightColumn]
+			return row[stripColAlias(v.RightColumn)]
 		}
 		if v.Column == "" {
 			return v.Value
 		}
-		return row[v.Column]
+		return row[stripColAlias(v.Column)]
 	case *parser.NullTestExpr:
-		val := row[v.Column]
+		val := row[stripColAlias(v.Column)]
 		if v.IsNull {
 			if val == "" {
 				return "true"
@@ -843,6 +907,27 @@ func evaluateExpressionValue(row storage.Row, expr parser.Expression) string {
 		return ""
 	case *parser.LiteralExpr:
 		return v.Value
+	case *parser.BinaryExpr:
+		left := evaluateExpressionValue(row, v.Left)
+		right := evaluateExpressionValue(row, v.Right)
+		leftNum, lErr := strconv.ParseFloat(left, 64)
+		rightNum, rErr := strconv.ParseFloat(right, 64)
+		if lErr == nil && rErr == nil {
+			switch v.Operator {
+			case "+":
+				return formatFloat(leftNum + rightNum)
+			case "-":
+				return formatFloat(leftNum - rightNum)
+			case "*":
+				return formatFloat(leftNum * rightNum)
+			case "/":
+				if rightNum == 0 {
+					return ""
+				}
+				return formatFloat(leftNum / rightNum)
+			}
+		}
+		return ""
 	default:
 		return ""
 	}
@@ -1004,7 +1089,9 @@ func LogicalToPhysical(node LogicalNode, ctx *PhysicalPlanContext) (PlanNode, er
 		if err != nil {
 			return nil, err
 		}
-		return NewJoinNode(left, right, n.LeftColumn, n.RightColumn), nil
+		jn := NewJoinNodeWithType(left, right, n.LeftColumn, n.RightColumn, n.JoinType)
+		jn.NormalizeKey = n.NormalizeKey
+		return jn, nil
 	case *LogicalAggregate:
 		child, err := LogicalToPhysical(n.Child, ctx)
 		if err != nil {
