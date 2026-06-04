@@ -216,10 +216,12 @@ CREATE TABLE t (...) WITH (
 
 ## 自定义查询作为数据源
 
-通过 `query` 参数，可以将任意查询结果映射为 gsql 表，支持复杂 JOIN、聚合和子查询：
+通过 `query` 参数，可以将任意查询结果映射为 gsql 表，支持复杂 JOIN、聚合和子查询。
+
+建议使用 **反引号（`` ` ``）** 包裹 `query` 值，避免 SQL 内的单/双引号需要转义：
 
 ```sql
--- MySQL 复杂查询
+-- MySQL 复杂查询（反引号包裹，内部引号无需转义）
 CREATE TABLE monthly_summary (
   month STRING,
   order_count INT,
@@ -228,7 +230,12 @@ CREATE TABLE monthly_summary (
 WITH (
   storage = 'mysql',
   url = 'mysql://root:secret@127.0.0.1:3306/shop',
-  query = 'SELECT DATE_FORMAT(order_date, '%%Y-%%m') AS month, COUNT(*) AS order_count, SUM(amount) AS total_amount FROM orders WHERE order_date >= "2024-01-01" GROUP BY DATE_FORMAT(order_date, '%%Y-%%m')'
+  query = `SELECT DATE_FORMAT(order_date, '%Y-%m') AS month,
+  COUNT(*) AS order_count,
+  SUM(amount) AS total_amount
+FROM orders
+WHERE order_date >= "2024-01-01"
+GROUP BY DATE_FORMAT(order_date, '%Y-%m')`
 );
 
 SELECT * FROM monthly_summary WHERE order_count > 10 ORDER BY month;
@@ -241,7 +248,11 @@ CREATE TABLE user_orders (
 )
 WITH (
   url = 'postgres://postgres:secret@127.0.0.1:5432/shop?sslmode=disable',
-  query = 'SELECT u.id AS user_id, u.name AS user_name, SUM(o.amount) AS total_spent FROM users u JOIN orders o ON u.id = o.user_id GROUP BY u.id, u.name'
+  query = `SELECT u.id AS user_id, u.name AS user_name,
+  SUM(o.amount) AS total_spent
+FROM users u
+JOIN orders o ON u.id = o.user_id
+GROUP BY u.id, u.name`
 );
 
 SELECT * FROM user_orders WHERE total_spent > 100;
@@ -255,11 +266,16 @@ CREATE TABLE top_scores (
 WITH (
   storage = 'sqlite',
   location = '/tmp/db.sqlite',
-  query = 'SELECT id, name, score FROM students WHERE score >= 80 ORDER BY score DESC'
+  query = `SELECT id, name, score
+FROM students
+WHERE score >= 80
+ORDER BY score DESC`
 );
 
 SELECT * FROM top_scores LIMIT 10;
 ```
+
+> `query` 值支持单引号 `'...'`、双引号 `"..."`、反引号 `` `...` `` 三种定界符。反引号内部可以自由使用单/双引号和换行，适合复杂的多行 SQL。
 
 ---
 

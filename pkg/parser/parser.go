@@ -453,7 +453,7 @@ func (l *lexer) nextToken() Token {
 		tok = Token{Type: DOT, Literal: "."}
 	case ';':
 		tok = Token{Type: SEMICOLON, Literal: ";"}
-	case '\'', '"':
+	case '\'', '"', '`':
 		quote := l.ch
 		tok.Type = STRING
 		tok.Literal = l.readString(quote)

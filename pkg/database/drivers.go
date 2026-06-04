@@ -46,6 +46,18 @@ func InferStorageFromURL(rawURL string) string {
 	if err != nil {
 		return ""
 	}
+
+	// URL scheme 优先（确定性的，不受 map 遍历顺序影响）
+	switch u.Scheme {
+	case "mysql":
+		return "mysql"
+	case "postgres", "postgresql":
+		return "postgres"
+	case "sqlite", "sqlite3":
+		return "sqlite"
+	}
+
+	// 非标准 scheme 回退到 parseURL 探测
 	for name, info := range registry {
 		if info.parseURL != nil {
 			dsn := info.parseURL(u)
@@ -53,10 +65,6 @@ func InferStorageFromURL(rawURL string) string {
 				return name
 			}
 		}
-	}
-	switch u.Scheme {
-	case "mysql", "postgres", "postgresql", "sqlite", "sqlite3":
-		return u.Scheme
 	}
 	return ""
 }
