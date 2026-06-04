@@ -6,6 +6,12 @@
 # 执行 SQL 文件
 gsql -s query.sql
 
+# 从远程存储读取 SQL 文件
+gsql -s s3://mybucket/queries/query.sql
+gsql -s lark://app_token/folder/query.sql
+gsql -s ftp://user:pass@host/path/query.sql
+gsql -s https://example.com/query.sql
+
 # 执行内联 SQL 语句
 gsql -e "SELECT 1 AS id, 'hello' AS msg"
 

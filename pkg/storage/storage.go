@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"net/http"
 	"net/url"
+	"path"
 	"path/filepath"
 	"strings"
 	"time"
@@ -13,6 +15,70 @@ import (
 	"github.com/ilibx/gsql/pkg/catalog"
 	"github.com/ilibx/gsql/pkg/serde"
 )
+
+// IsURLScheme reports whether rawURL has a recognized storage URL scheme prefix.
+func IsURLScheme(rawURL string) bool {
+	return strings.Contains(rawURL, "://")
+}
+
+// ReadFromURL reads the full contents of a file reachable at the given URL.
+// Supported schemes: s3://, lark://, ftp://, sftp://, http://, https://,
+// webdav://, gitlfs://, local://.
+func ReadFromURL(ctx context.Context, rawURL string) ([]byte, error) {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return nil, fmt.Errorf("invalid url %q: %w", rawURL, err)
+	}
+
+	scheme := strings.ToLower(parsed.Scheme)
+
+	// http/https – direct HTTP fetch
+	if scheme == "http" || scheme == "https" {
+		req, err := http.NewRequestWithContext(ctx, "GET", rawURL, nil)
+		if err != nil {
+			return nil, fmt.Errorf("http request %q: %w", rawURL, err)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("http get %q: %w", rawURL, err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != 200 {
+			return nil, fmt.Errorf("http get %q: status %s", rawURL, resp.Status)
+		}
+		return io.ReadAll(resp.Body)
+	}
+
+	tbl := &catalog.Table{
+		Name:        "_url_",
+		WithOptions: map[string]string{"url": rawURL},
+	}
+	catalog.SetupTableFromURL(tbl)
+
+	filePath := strings.TrimPrefix(parsed.Path, "/")
+
+	// Lark uses root_token for the base; the rest of the path is the file.
+	// For all other backends the path option doubles as a directory prefix,
+	// so we split it into directory + filename before passing to Open.
+	if scheme != "lark" && strings.HasSuffix(filePath, ".sql") {
+		dir, file := path.Split(filePath)
+		tbl.WithOptions["path"] = strings.TrimSuffix(dir, "/")
+		filePath = file
+	}
+
+	stg, err := GetStorage(tbl)
+	if err != nil {
+		return nil, fmt.Errorf("create storage from %q: %w", rawURL, err)
+	}
+
+	f, err := stg.Open(ctx, filePath)
+	if err != nil {
+		return nil, fmt.Errorf("open %q: %w", rawURL, err)
+	}
+	defer f.Close()
+
+	return io.ReadAll(f)
+}
 
 type File interface {
 	io.Reader

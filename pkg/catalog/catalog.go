@@ -89,6 +89,12 @@ func normalizeName(name string) string {
     return strings.ToLower(name)
 }
 
+// SetupTableFromURL parses the 'url' option in tbl.WithOptions and fills
+// in storage-type-specific parameters (storage, host, path, credentials, etc.).
+func SetupTableFromURL(tbl *Table) {
+	parseStorageURL(tbl)
+}
+
 // parseStorageURL parses the 'url' option and automatically fills in storage-related parameters.
 func parseStorageURL(tbl *Table) {
     urlStr, hasURL := tbl.WithOptions["url"]

@@ -1,18 +1,21 @@
 package main
 
 import (
-    "fmt"
-    "os"
-    "strings"
+	"context"
+	"fmt"
+	"os"
+	"strings"
 
-    "github.com/ilibx/gsql/pkg/catalog"
-    "github.com/ilibx/gsql/pkg/engine"
-    "github.com/ilibx/gsql/pkg/parser"
+	"github.com/ilibx/gsql/pkg/catalog"
+	"github.com/ilibx/gsql/pkg/engine"
+	"github.com/ilibx/gsql/pkg/parser"
+	"github.com/ilibx/gsql/pkg/storage"
 )
 
 func main() {
     if len(os.Args) < 2 {
-        fmt.Println("Usage: gsql [desc] [-v]... -s <sql-file> [-e <sql-statement>] ...")
+		fmt.Println("Usage: gsql [desc] [-v]... -s <sql-file|url> [-e <sql-statement>] ...")
+		fmt.Println("  -s supports local files and storage URLs (s3://, lark://, ftp://, sftp://, http://, https://, webdav://, gitlfs://)")
         os.Exit(1)
     }
 
@@ -45,17 +48,24 @@ func main() {
 
     for i := 0; i < len(args); i++ {
         switch args[i] {
-        case "-s":
-            i++
-            if i >= len(args) {
-                fmt.Fprintln(os.Stderr, "error: expected sql file after -s")
-                os.Exit(1)
-            }
-            data, err := os.ReadFile(args[i])
-            if err != nil {
-                fmt.Fprintf(os.Stderr, "read sql file failed: %v\n", err)
-                os.Exit(1)
-            }
+		case "-s":
+			i++
+			if i >= len(args) {
+				fmt.Fprintln(os.Stderr, "error: expected sql file after -s")
+				os.Exit(1)
+			}
+			arg := args[i]
+			var data []byte
+			var err error
+			if storage.IsURLScheme(arg) {
+				data, err = storage.ReadFromURL(context.Background(), arg)
+			} else {
+				data, err = os.ReadFile(arg)
+			}
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "read sql file failed: %v\n", err)
+				os.Exit(1)
+			}
             stmts, err := p.Parse(string(data))
             if err != nil {
                 fmt.Fprintf(os.Stderr, "parse sql failed: %v\n", err)

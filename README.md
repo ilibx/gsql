@@ -11,6 +11,9 @@ make build
 # 执行 SQL
 ./bin/gsql -e "SELECT 1 AS id, 'hello' AS msg"
 ./bin/gsql -s query.sql
+./bin/gsql -s s3://mybucket/sql/query.sql    # 从 S3 读取 SQL
+./bin/gsql -s lark://app_token/folder/query.sql  # 从飞书读取 SQL
+./bin/gsql -s https://example.com/query.sql      # 从 HTTP 读取 SQL
 
 # 运行测试
 make test

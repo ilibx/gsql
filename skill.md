@@ -40,6 +40,8 @@ make run-sql        # 执行 tests/check.sql
 # 直接执行 SQL
 ./bin/gsql -e "SELECT 1 AS id"
 ./bin/gsql -s file.sql
+./bin/gsql -s s3://bucket/query.sql               # 从远程存储读取
+./bin/gsql -s lark://token/folder/query.sql        # 从飞书读取
 ./bin/gsql -s setup.sql -s query.sql    # 组合文件
 ```
 
