@@ -31,6 +31,108 @@ gsql desc
 
 ---
 
+## 模板 SQL（Jinja2）
+
+使用 `-t` 加载 SQL 模板文件，`-a` 传入参数，模板渲染后再执行。
+
+### 基本参数
+
+```bash
+# 加载模板文件并用参数填充
+gsql -t query.sql -a "min_age=30" -a "city=Beijing"
+
+# 支持 local:// 前缀
+gsql -t local://path/to/query.sql -a "key=value"
+```
+
+模板文件 `query.sql`：
+```sql
+SELECT id, name, age
+FROM users
+WHERE age >= {{ min_age }} AND city = '{{ city }}'
+ORDER BY id;
+```
+
+### JSON 数组参数（批量插入）
+
+`-a` 的值如果是 JSON 数组或对象，会自动解析为结构化数据，可在模板中用 `{% for %}` 遍历：
+
+```bash
+# 内联 JSON 数组
+gsql -t batch_insert.sql -a "rows=[{\"id\":1,\"name\":\"Alice\"},{\"id\":2,\"name\":\"Bob\"}]"
+
+# 从 JSON 文件加载（推荐）
+gsql -t batch_insert.sql -a "rows=@data.json" -a "min_age=18"
+```
+
+模板文件 `batch_insert.sql`：
+```sql
+CREATE TABLE users (id INT, name STRING, age INT)
+WITH (storage = 'local', format = 'csv', path = 'output');
+
+{% for row in rows %}
+INSERT INTO users VALUES ({{ row.id }}, '{{ row.name }}', {{ row.age }});
+{% endfor %}
+
+SELECT * FROM users WHERE age >= {{ min_age }};
+```
+
+JSON 文件 `data.json`：
+```json
+[
+  {"id": 10, "name": "Alice", "age": 25, "city": "Beijing"},
+  {"id": 11, "name": "Bob",   "age": 30, "city": "Shanghai"}
+]
+```
+
+### JSON 文件引用
+
+通过 `@` 前缀引用外部 JSON 文件：
+
+```bash
+gsql -t batch.sql -a "rows=@data.json" -a "config=@config.json"
+```
+
+### 条件渲染
+
+支持 Jinja2 的 `{% if %}` 条件判断：
+
+```sql
+SELECT * FROM users
+{% if min_age %}
+WHERE age >= {{ min_age }}
+{% endif %}
+ORDER BY {{ order_by|default('id') }};
+```
+
+### -t 支持的 URL 协议
+
+与 `-s` 相同，支持所有存储后端 URL：
+
+```bash
+# 本地文件
+gsql -t local://path/to/query.sql -a "x=1"
+
+# 对象存储
+gsql -t s3://bucket/template.sql -a "param=value"
+
+# 飞书文档
+gsql -t lark://app_token/folder/template.sql -a "env=prod"
+
+# HTTP 远程文件
+gsql -t https://example.com/tpl.sql -a "mode=test"
+
+# FTP / SFTP
+gsql -t ftp://user:pass@host/path/tpl.sql -a "key=val"
+gsql -t sftp://user@host/path/tpl.sql -a "key=val"
+
+# WebDAV / Git LFS
+gsql -t webdav://host/path/tpl.sql -a "x=1"
+gsql -t gitlfs://host/repo/tpl.sql -a "x=1"
+```
+
+---
+
 ## 建表
 
 ```sql

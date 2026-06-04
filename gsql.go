@@ -3,6 +3,7 @@ package gsql
 import (
 	"fmt"
 
+	"github.com/flosch/pongo2/v5"
 	"github.com/ilibx/gsql/pkg/catalog"
 	"github.com/ilibx/gsql/pkg/engine"
 	"github.com/ilibx/gsql/pkg/parser"
@@ -55,4 +56,27 @@ func (db *DB) Exec(sql string) ([]map[string]string, error) {
 		}
 	}
 	return lastResult, nil
+}
+
+// ExecTemplate renders a Jinja2 template with the given parameters,
+// then parses and executes the resulting SQL.
+// params values can be strings, or parsed JSON objects/arrays for iteration.
+// Parameters support Jinja2 syntax: {{ key }}, {% for %}, etc.
+func (db *DB) ExecTemplate(tpl string, params map[string]interface{}) ([]map[string]string, error) {
+	t, err := pongo2.FromString(tpl)
+	if err != nil {
+		return nil, fmt.Errorf("parse template failed: %w", err)
+	}
+
+	ctx := pongo2.Context{}
+	for k, v := range params {
+		ctx[k] = v
+	}
+
+	rendered, err := t.Execute(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("render template failed: %w", err)
+	}
+
+	return db.Exec(rendered)
 }
