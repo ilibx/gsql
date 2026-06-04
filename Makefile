@@ -10,6 +10,10 @@ build:
 	@mkdir -p bin
 	go build -o $(BIN) ./cmd/gsql
 
+build-linux-amd64:
+	@mkdir -p bin
+	GOARCH=amd64 GOOS=linux go build -o $(BIN) ./cmd/gsql
+
 run-sql: build
 	@echo "Running SQL from $(SQL_FILE)"
 	@$(BIN) -s $(SQL_FILE)
