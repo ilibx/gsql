@@ -253,6 +253,24 @@ WITH (
 );
 ```
 
+`lark://` URL 中：
+- **host** 部分为**文件夹名称**（如 `gsql-data`），程序会自动在飞书网盘根目录创建/查找
+- **path** 部分为文件路径
+- **query** 部分传 `app_id`、`app_secret`、`chat_id` 等参数
+
+> **⚠️ Shell 中 `&` 需要引号**：URL 中的 `&` 会被 shell 解释为后台运行符，必须用引号包裹：
+> ```bash
+> gsql -s 'lark://月度账单/data.csv?app_id=cli_xxx&app_secret=xxx&chat_id=oc_xxx'
+> ```
+
+如果需要直接指定文件夹 token（而非名称查找），在 query 中传入 `root_token`：
+```sql
+WITH (
+  url = 'lark://path/file.sql?root_token=folder_uuid&app_id=cli_xxx&app_secret=xxx',
+  format = 'csv'
+);
+```
+
 ### 配置参数
 
 | 参数 | 说明 |
@@ -260,7 +278,7 @@ WITH (
 | `app_id` / `lark_app_id` | 飞书应用的 App ID |
 | `app_secret` / `lark_app_secret` | 飞书应用的 App Secret |
 | `path` | 根文件夹名称（推荐，自动创建/查找） |
-| `root_token` / `lark_root_token` | 根文件夹 token（与 `folder` 二选一） |
+| `root_token` / `lark_root_token` | 根文件夹 token（与 `path` 二选一，通过 query 传入） |
 | `chat_id` / `lark_chat_id` | 群聊 ID（可选，自动授权） |
 | `format` | 支持 `csv`、`json`、`excel` / `xlsx` |
 

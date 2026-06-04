@@ -29,6 +29,19 @@ gsql desc
 
 `-v` 可置于命令任意位置，每增加一个 `v` 提升一级调试级别。
 
+> **⚠️ URL 中的 `&` 需要引号保护**：Shell 中 `&` 是后台运行符，含有查询参数的 URL 必须用引号包裹：
+> ```bash
+> # ❌ 错误：& 被 shell 解析为后台任务
+> gsql -s lark://folder/file.sql?app_id=xxx&app_secret=yyy
+> # [1] 12345  → 只运行了前半段
+>
+> # ✅ 正确：单引号保护整个 URL
+> gsql -s 'lark://folder/file.sql?app_id=xxx&app_secret=yyy'
+>
+> # ✅ 双引号也可以
+> gsql -s "lark://folder/file.sql?app_id=xxx&app_secret=yyy"
+> ```
+
 ---
 
 ## 模板 SQL（Jinja2）

@@ -194,7 +194,7 @@ func parseStorageURL(tbl *Table) {
         }
     case "lark":
         tbl.WithOptions["storage"] = "lark"
-        tbl.WithOptions["root_token"] = parsed.Host
+        tbl.WithOptions["path"] = parsed.Host
         if parsed.User != nil {
             tbl.WithOptions["app_id"] = parsed.User.Username()
             if pass, ok := parsed.User.Password(); ok {
