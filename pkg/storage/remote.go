@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"net/url"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -17,6 +18,7 @@ import (
 	"golang.org/x/crypto/ssh"
 
 	"github.com/ilibx/gsql/pkg/catalog"
+	"github.com/ilibx/gsql/pkg/tunnel"
 )
 
 // Remote storage option keys (without type prefix)
@@ -55,10 +57,11 @@ func parseRemoteURL(rawURL string, defaultPort string) (host, port, path string,
 // ---------------------------------------------------------------------------
 
 type ftpStorage struct {
-	addr string
-	user string
-	pass string
-	root string
+	addr        string
+	user        string
+	pass        string
+	root        string
+	tunnelClose func()
 }
 
 func newFTPStorage(tbl *catalog.Table) (Storage, error) {
@@ -95,12 +98,38 @@ func newFTPStorage(tbl *catalog.Table) (Storage, error) {
 	if host == "" {
 		return nil, fmt.Errorf("missing host for FTP table %s", tbl.Name)
 	}
+
+	addr := fmt.Sprintf("%s:%s", host, port)
+	var tunnelClose func()
+
+	if sshCfg := tunnel.OptionsFromMap(tbl.WithOptions); sshCfg != nil {
+		portInt := 21
+		if p, err := strconv.Atoi(port); err == nil {
+			portInt = p
+		}
+		localAddr, closeFn, err := tunnel.Dial(sshCfg, host, portInt)
+		if err != nil {
+			return nil, fmt.Errorf("ssh tunnel: %w", err)
+		}
+		tunnelClose = closeFn
+		addr = localAddr
+	}
+
 	return &ftpStorage{
-		addr: fmt.Sprintf("%s:%s", host, port),
-		user: user,
-		pass: pass,
-		root: strings.TrimSuffix(root, "/"),
+		addr:        addr,
+		user:        user,
+		pass:        pass,
+		root:        strings.TrimSuffix(root, "/"),
+		tunnelClose: tunnelClose,
 	}, nil
+}
+
+func (s *ftpStorage) Close() error {
+	if s.tunnelClose != nil {
+		s.tunnelClose()
+		s.tunnelClose = nil
+	}
+	return nil
 }
 
 func (s *ftpStorage) dial() (*ftp.ServerConn, error) {

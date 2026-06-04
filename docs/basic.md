@@ -66,6 +66,24 @@ WHERE age >= {{ min_age }} AND city = '{{ city }}'
 ORDER BY id;
 ```
 
+### 重复参数自动合并
+
+同一个 key 多次使用 `-a`，会自动合并为逗号分隔的字符串。常用于 `IN` 查询：
+
+```bash
+gsql -t export.sql -a "month=2026-05" -a "user=alice" -a "user=bob" -a "user=charlie"
+```
+
+模板文件 `export.sql`：
+```sql
+-- 模板中用 |safe 防止单引号被转义
+WHERE month = '{{ month }}' AND username in ('{{ user|safe }}')
+```
+
+等价于传入一个参数：`username in('alice','bob','charlie')`
+
+> 注意：模板中引用合并参数时必须加 `|safe` 过滤器，否则 pongo2 会将 `'` 转义为 `&#39;`。
+
 ### JSON 数组参数（批量插入）
 
 `-a` 的值如果是 JSON 数组或对象，会自动解析为结构化数据，可在模板中用 `{% for %}` 遍历：
@@ -174,6 +192,42 @@ WITH (
 | 反引号 | `` query = `SELECT * FROM t WHERE name = 'foo'` `` | 多行或值内含单/双引号时使用 |
 
 反引号内部可以自由使用 `'`、`"` 和换行，无需转义。
+
+### SSH 跳板（SSH 隧道）
+
+数据库和远程存储（FTP、S3）可以通过 SSH 跳板机访问：
+
+```sql
+CREATE TABLE mydb (id INT, name STRING)
+WITH (
+  storage = 'mysql',
+  host = '192.168.1.100',
+  port = '3306',
+  username = 'root',
+  password = 'secret',
+  database = 'mydb',
+  ssh_host = 'jump.example.com',    -- SSH 跳板机地址
+  ssh_port = '22',                   -- SSH 端口（默认 22）
+  ssh_user = 'jumper',               -- SSH 用户名
+  ssh_password = 'ssh_pass',         -- SSH 密码（与 ssh_key 二选一）
+  ssh_key = '/path/to/id_rsa',      -- SSH 密钥路径
+  ssh_key_passphrase = ''           -- 密钥口令（可选）
+);
+```
+
+URL 方式同样支持：
+
+```sql
+CREATE TABLE mydb (id INT, name STRING)
+WITH (
+  url = 'mysql://root:secret@192.168.1.100:3306/mydb',
+  ssh_host = 'jump.example.com',
+  ssh_user = 'jumper',
+  ssh_key = '/path/to/id_rsa'
+);
+```
+
+SSH 隧道会将数据库或存储的连接通过跳板机转发到目标内网地址。
 
 支持的列类型：`INT`、`BIGINT`、`FLOAT`、`DOUBLE`、`STRING`、`BOOLEAN`。
 

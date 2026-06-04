@@ -127,6 +127,9 @@ WITH (
 | `access_secret` | 访问密钥 Secret |
 | `use_path_style` | 路径式寻址（MinIO 等需要 `true`） |
 | `retry_mode` | 重试模式：`standard` 或 `adaptive` |
+| `ssh_host` | SSH 跳板机地址（通过跳板访问内网 S3） |
+| `ssh_user` | SSH 用户名 |
+| `ssh_password` / `ssh_key` | SSH 认证 |
 
 ---
 
@@ -289,6 +292,50 @@ WITH (
 ### 获取文件夹 token
 
 在飞书云文档中打开目标文件夹，浏览器地址栏 URL 中的 `{token}` 部分即为文件夹 token。
+
+---
+
+## SSH 跳板（SSH 隧道）
+
+数据库（MySQL/PostgreSQL）和远程存储（FTP、S3）支持通过 SSH 跳板机访问内网服务：
+
+```sql
+-- FTP 通过 SSH 跳板
+CREATE TABLE ftp_data (id INT, name STRING)
+WITH (
+  storage = 'ftp',
+  host = '192.168.1.100',
+  port = '21',
+  username = 'ftp_user',
+  password = 'ftp_pass',
+  path = '/data',
+  ssh_host = 'jump.example.com',
+  ssh_user = 'jumper',
+  ssh_key = '/path/to/id_rsa'
+);
+
+-- S3 通过 SSH 跳板
+CREATE TABLE s3_data (id INT, name STRING)
+WITH (
+  url = 's3://minio.internal:9000/bucket/data?access_key=xxx&access_secret=yyy',
+  ssh_host = 'jump.example.com',
+  ssh_user = 'jumper',
+  ssh_password = 'ssh_pass'
+);
+```
+
+SSH 隧道参数：
+
+| 参数 | 说明 |
+|------|------|
+| `ssh_host` | SSH 跳板机地址 |
+| `ssh_port` | SSH 端口（默认 22） |
+| `ssh_user` | SSH 用户名（默认 root） |
+| `ssh_password` | SSH 密码（与 `ssh_key` 二选一） |
+| `ssh_key` | SSH 私钥路径 |
+| `ssh_key_passphrase` | 私钥口令（可选） |
+| `ssh_target_host` | 目标主机（可选，默认从 host/url 推断） |
+| `ssh_target_port` | 目标端口（可选，默认从 port/url 推断） |
 
 ---
 

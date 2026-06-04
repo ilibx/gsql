@@ -9,7 +9,9 @@ import (
 	"net/url"
 	"path"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -18,6 +20,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/ilibx/gsql/pkg/catalog"
+	"github.com/ilibx/gsql/pkg/tunnel"
 )
 
 const s3Timeout = 30 * time.Second
@@ -43,9 +46,21 @@ func parseS3URL(rawURL string) (bucket, prefix string, err error) {
 }
 
 type s3Storage struct {
-	client *s3.Client
-	bucket string
-	prefix string
+	client      *s3.Client
+	bucket      string
+	prefix      string
+	tunnelClose func()
+	closeOnce   sync.Once
+}
+
+func (s *s3Storage) Close() error {
+	s.closeOnce.Do(func() {
+		if s.tunnelClose != nil {
+			s.tunnelClose()
+			s.tunnelClose = nil
+		}
+	})
+	return nil
 }
 
 func newS3Storage(tbl *catalog.Table) (Storage, error) {
@@ -100,11 +115,34 @@ func newS3Storage(tbl *catalog.Table) (Storage, error) {
 	usePathStyle := tbl.Option("use_path_style", "") == "true" ||
 		tbl.Option("s3_use_path_style", "") == "true"
 
-	var client *s3.Client
+	// SSH tunnel for S3 behind a jump host
+	var tunnelClose func()
 	endpoint := tbl.Option("endpoint", "")
 	if endpoint == "" {
 		endpoint = tbl.Option("s3_endpoint", "")
 	}
+	if sshCfg := tunnel.OptionsFromMap(tbl.WithOptions); sshCfg != nil {
+		if endpoint != "" {
+			u, err := url.Parse(endpoint)
+			if err == nil {
+				host := u.Hostname()
+				port := 443
+				if p := u.Port(); p != "" {
+					port, _ = strconv.Atoi(p)
+				}
+				localAddr, closeFn, err := tunnel.Dial(sshCfg, host, port)
+				if err != nil {
+					return nil, fmt.Errorf("ssh tunnel: %w", err)
+				}
+				tunnelClose = closeFn
+				u.Host = localAddr
+				u.Scheme = "http"
+				endpoint = u.String()
+			}
+		}
+	}
+
+	var client *s3.Client
 	if endpoint != "" {
 		client = s3.NewFromConfig(cfg, func(o *s3.Options) {
 			o.BaseEndpoint = &endpoint
@@ -116,7 +154,7 @@ func newS3Storage(tbl *catalog.Table) (Storage, error) {
 		})
 	}
 
-	return &s3Storage{client: client, bucket: bucket, prefix: prefix}, nil
+	return &s3Storage{client: client, bucket: bucket, prefix: prefix, tunnelClose: tunnelClose}, nil
 }
 
 // retryModeFromOption returns the AWS retry mode from table options.

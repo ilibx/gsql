@@ -131,7 +131,13 @@ func main() {
 				fmt.Fprintf(os.Stderr, "error: empty key in parameter: %s\n", arg)
 				os.Exit(1)
 			}
-			params[key] = parseParamValue(val)
+			parsed := parseParamValue(val)
+			existing, ok := params[key]
+			if ok {
+				params[key] = fmt.Sprintf("%v','%v", existing, parsed)
+			} else {
+				params[key] = parsed
+			}
 		} else {
 			filtered = append(filtered, args[i])
 		}

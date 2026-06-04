@@ -2172,12 +2172,31 @@ func (p *Parser) parseValuesClause() ([][]string, error) {
 func removeComments(sql string) string {
 	lines := strings.Split(sql, "\n")
 	var cleaned []string
+	inString := false
+	var stringQuote byte
 	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "--") {
-			continue
+		if !inString {
+			trimmed := strings.TrimSpace(line)
+			if strings.HasPrefix(trimmed, "--") {
+				continue
+			}
 		}
 		cleaned = append(cleaned, line)
+		for i := 0; i < len(line); i++ {
+			ch := line[i]
+			if inString {
+				if ch == '\\' {
+					i++ // skip escaped char
+				} else if ch == stringQuote {
+					inString = false
+				}
+			} else {
+				if ch == '\'' || ch == '"' || ch == '`' {
+					inString = true
+					stringQuote = ch
+				}
+			}
+		}
 	}
 	return strings.Join(cleaned, "\n")
 }

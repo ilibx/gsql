@@ -4,10 +4,12 @@ import (
 	"database/sql"
 	"fmt"
 	"net/url"
+	"strconv"
 	"strings"
 
 	"github.com/ilibx/gsql/pkg/catalog"
 	"github.com/ilibx/gsql/pkg/serde"
+	"github.com/ilibx/gsql/pkg/tunnel"
 )
 
 type Row = serde.Row
@@ -19,8 +21,9 @@ type Database interface {
 }
 
 type sqlDB struct {
-	db      *sql.DB
-	dialect string
+	db          *sql.DB
+	dialect     string
+	tunnelClose func()
 }
 
 func (d *sqlDB) Query(query string) ([]Row, error) {
@@ -69,6 +72,9 @@ func (d *sqlDB) Exec(query string, args ...any) error {
 }
 
 func (d *sqlDB) Close() error {
+	if d.tunnelClose != nil {
+		d.tunnelClose()
+	}
 	return d.db.Close()
 }
 
@@ -93,16 +99,120 @@ func Open(tbl *catalog.Table) (Database, error) {
 	if !ok {
 		return nil, fmt.Errorf("unsupported database storage type: %q", storageType)
 	}
+
 	dsn := dataSourceName(tbl, info)
+
+	// SSH tunnel for database connections behind a jump host
+	var tunnelClose func()
+	if sshCfg := tunnel.OptionsFromMap(tbl.WithOptions); sshCfg != nil {
+		host, port, err := targetHostPort(tbl, storageType)
+		if err != nil {
+			return nil, fmt.Errorf("ssh tunnel: %w", err)
+		}
+		localAddr, closeFn, err := tunnel.Dial(sshCfg, host, port)
+		if err != nil {
+			return nil, fmt.Errorf("ssh tunnel: %w", err)
+		}
+		tunnelClose = closeFn
+		dsn = rewriteDSN(dsn, storageType, localAddr)
+	}
+
 	db, err := sql.Open(info.driverName, dsn)
 	if err != nil {
+		if tunnelClose != nil {
+			tunnelClose()
+		}
 		return nil, fmt.Errorf("failed to connect to %s: %w", storageType, err)
 	}
 	if err := db.Ping(); err != nil {
 		db.Close()
+		if tunnelClose != nil {
+			tunnelClose()
+		}
 		return nil, fmt.Errorf("failed to ping %s: %w", storageType, err)
 	}
-	return &sqlDB{db: db, dialect: storageType}, nil
+	return &sqlDB{db: db, dialect: storageType, tunnelClose: tunnelClose}, nil
+}
+
+// targetHostPort extracts the target host and port for SSH tunneling from
+// table options or URL.
+func targetHostPort(tbl *catalog.Table, storageType string) (string, int, error) {
+	host := tbl.Option("host", "")
+	portStr := tbl.Option("port", "")
+
+	// Try parsed URL if no explicit host
+	if host == "" {
+		if rawURL := tbl.Option("url", ""); rawURL != "" {
+			u, err := url.Parse(rawURL)
+			if err == nil {
+				host = u.Hostname()
+				if p := u.Port(); p != "" {
+					portStr = p
+				}
+			}
+		}
+	}
+
+	if host == "" {
+		return "", 0, fmt.Errorf("cannot determine target host; specify ssh_target_host or host/url")
+	}
+
+	port := defaultPort(storageType)
+	if portStr != "" {
+		if p, err := strconv.Atoi(portStr); err == nil {
+			port = p
+		}
+	}
+
+	// Allow override via ssh_target_host / ssh_target_port
+	if h := tbl.Option("ssh_target_host", ""); h != "" {
+		host = h
+	}
+	if p := tbl.Option("ssh_target_port", ""); p != "" {
+		if pi, err := strconv.Atoi(p); err == nil {
+			port = pi
+		}
+	}
+
+	return host, port, nil
+}
+
+func defaultPort(storageType string) int {
+	switch storageType {
+	case "mysql":
+		return 3306
+	case "postgres", "postgresql":
+		return 5432
+	default:
+		return 3306
+	}
+}
+
+// rewriteDSN modifies the DSN to point to localAddr instead of the original host:port.
+func rewriteDSN(dsn, storageType, localAddr string) string {
+	switch storageType {
+	case "mysql":
+		// user:pass@tcp(host:port)/dbname?params -> user:pass@tcp(localAddr)/dbname?params
+		if idx := strings.Index(dsn, "@tcp("); idx >= 0 {
+			rest := dsn[idx+5:] // after "@tcp("
+			if end := strings.Index(rest, ")"); end >= 0 {
+				return dsn[:idx+5] + localAddr + rest[end:]
+			}
+		}
+	case "postgres", "postgresql":
+		// host=xxx port=yyy ... -> host=127.0.0.1 port=tunnelPort ...
+		parts := strings.Fields(dsn)
+		for i, p := range parts {
+			if strings.HasPrefix(p, "host=") {
+				parts[i] = "host=127.0.0.1"
+			} else if strings.HasPrefix(p, "port=") {
+				_, portStr, _ := strings.Cut(localAddr, ":")
+				parts[i] = "port=" + portStr
+			}
+		}
+		return strings.Join(parts, " ")
+	}
+	return dsn
 }
 
 func ReadTable(tbl *catalog.Table) ([]Row, error) {

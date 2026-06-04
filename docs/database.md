@@ -156,6 +156,38 @@ SELECT * FROM logs;
 | `storage` | 数据库类型：`mysql`、`postgres`、`sqlite`（可省略，从 `url` 自动推断） |
 | `table_name` | 目标数据库中的表名（默认与 gsql 表名相同） |
 | `query` | 可选，自定义查询语句作为数据源 |
+| `ssh_host` | SSH 跳板机地址（通过跳板访问内网数据库） |
+| `ssh_user` | SSH 用户名 |
+| `ssh_password` / `ssh_key` | SSH 认证（密码或密钥） |
+
+### SSH 跳板示例
+
+```sql
+-- MySQL 通过 SSH 跳板
+CREATE TABLE mydb (id INT, name STRING)
+WITH (
+  storage = 'mysql',
+  host = '10.0.1.50',
+  port = '3306',
+  username = 'root',
+  password = 'secret',
+  database = 'mydb',
+  ssh_host = 'bastion.example.com',
+  ssh_user = 'jumper',
+  ssh_key = '/home/jumper/.ssh/id_rsa'
+);
+
+-- PostgreSQL 通过 SSH 跳板（URL 方式）
+CREATE TABLE mydb (id INT, name STRING)
+WITH (
+  url = 'postgres://user:pass@10.0.1.50:5432/mydb?sslmode=disable',
+  ssh_host = 'bastion.example.com',
+  ssh_user = 'jumper',
+  ssh_password = 'ssh_pass'
+);
+```
+
+SSH 隧道建立后，实际数据库连接会通过本地转发端口走跳板机到达内网目标。
 
 ### 连接方式
 

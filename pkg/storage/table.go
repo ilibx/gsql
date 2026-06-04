@@ -59,6 +59,9 @@ func ReadTableRows(tbl *catalog.Table, filters ...PartitionFilter) ([]Row, error
 	if err != nil {
 		return nil, err
 	}
+	if c, ok := store.(interface{ Close() error }); ok {
+		defer c.Close()
+	}
 	return readTable(store, tbl, filters)
 }
 
@@ -391,6 +394,9 @@ func WriteRows(tbl *catalog.Table, rows []Row, appendMode bool) error {
 	store, err := GetStorage(tbl)
 	if err != nil {
 		return err
+	}
+	if c, ok := store.(interface{ Close() error }); ok {
+		defer c.Close()
 	}
 	return writeTable(store, tbl, rows, appendMode)
 }
