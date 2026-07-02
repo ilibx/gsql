@@ -358,3 +358,48 @@ func parseOracleURL(u *url.URL) string {
     return u.String()
 }
 ```
+
+---
+
+## 常见问题
+
+### RDS PostgreSQL 连接报 `no pg_hba.conf entry` / `no encryption`
+
+**现象**：Go 程序（gsql）连接 AWS RDS PostgreSQL 时报错：
+
+```
+execution failed: failed to ping postgres: pq: no pg_hba.conf entry for host "172.31.15.192", user "xxx", database "xxx", no encryption
+```
+
+但 **DBeaver 同一配置可正常连接**。
+
+**原因**：
+
+| 客户端 | 默认 SSL 行为 | 连接结果 |
+|--------|--------------|----------|
+| DBeaver | `sslmode=prefer`（优先 SSL） | 自动协商 SSL，连接成功 |
+| Go `pq` 驱动 | `sslmode=disable`（默认不加密） | RDS 拒绝非 SSL 连接 |
+
+AWS RDS 要求所有连接使用 SSL（`rds.force_ssl=1`），非 SSL 请求会被 `pg_hba.conf` 内部规则拒绝（报 `no encryption`），**并非网络不可达**。
+
+**解决方案**：
+
+连接 URL 中加 `sslmode=require` 或 `sslmode=disable`（不推荐）：
+
+```sql
+-- 推荐：启用 SSL
+CREATE TABLE t (...) WITH (
+  url = 'postgres://user:pass@rds-host:5432/db?sslmode=require'
+);
+
+-- 传统方式
+CREATE TABLE t (...) WITH (
+  storage = 'postgres',
+  host = 'rds-host',
+  port = '5432',
+  username = 'user',
+  password = 'pass',
+  database = 'db',
+  sslmode = 'require'
+);
+```
