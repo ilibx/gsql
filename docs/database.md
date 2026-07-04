@@ -145,6 +145,9 @@ SELECT 1 AS id, 'startup' AS message, '2026-01-15 10:00:00' AS created_at;
 SELECT * FROM logs;
 ```
 
+> **时区**：PostgreSQL 连接会自动注入 `timezone` 参数，取值为**本机时区偏移**（如 `+08:00`），确保 `to_timestamp()` / `to_char(..., 'YYYY-MM')` 等时区敏感函数的行为与 DBeaver 等桌面端一致。
+> 可在 URL 参数或 WITH 选项中用 `timezone = 'Asia/Shanghai'` 覆盖。
+
 ---
 
 ## 配置参数
@@ -156,6 +159,7 @@ SELECT * FROM logs;
 | `storage` | 数据库类型：`mysql`、`postgres`、`sqlite`（可省略，从 `url` 自动推断） |
 | `table_name` | 目标数据库中的表名（默认与 gsql 表名相同） |
 | `query` | 可选，自定义查询语句作为数据源 |
+| `timezone` | 连接时区（如 `Asia/Shanghai`、`+08:00`），默认取本机时区偏移 |
 | `ssh_host` | SSH 跳板机地址（通过跳板访问内网数据库） |
 | `ssh_user` | SSH 用户名 |
 | `ssh_password` / `ssh_key` | SSH 认证（密码或密钥） |
@@ -362,6 +366,22 @@ func parseOracleURL(u *url.URL) string {
 ---
 
 ## 常见问题
+
+### gsql 查到的聚合数据与 DBeaver 不一致
+
+**现象**：相同 SQL、相同数据库，gsql 返回的 `SUM`/`COUNT` 等聚合值和 DBeaver 不同。
+
+**原因**：`to_timestamp()` / `to_char(..., 'YYYY-MM')` 等时区敏感函数依赖会话的 `TimeZone` 参数。DBeaver 通常使用系统时区，而 Go `lib/pq` 驱动默认用 UTC，导致临近午夜的数据跨月，聚合结果不同。
+
+**解决**：gsql 会在 PostgreSQL 连接时自动注入本机时区偏移（如 `+08:00`），无需手动配置。也可通过 `timezone` 选项显式指定：
+
+```sql
+CREATE TABLE t (...) WITH (
+  url = 'postgres://user:pass@host:5432/db?sslmode=require&timezone=Asia/Shanghai'
+  -- 或单独指定
+  -- timezone = 'Asia/Shanghai'
+);
+```
 
 ### RDS PostgreSQL 连接报 `no pg_hba.conf entry` / `no encryption`
 

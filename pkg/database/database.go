@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 
@@ -11,6 +12,12 @@ import (
 	"github.com/ilibx/gsql/pkg/serde"
 	"github.com/ilibx/gsql/pkg/tunnel"
 )
+
+func debugQuery(query string) {
+	if catalog.DebugLevel >= 2 {
+		fmt.Fprintf(os.Stderr, "-- [database] SQL:\n%s\n--\n", query)
+	}
+}
 
 type Row = serde.Row
 
@@ -39,14 +46,35 @@ func (d *sqlDB) Query(query string) ([]Row, error) {
 	}
 
 	var result []Row
+	rowNum := 0
 	for rows.Next() {
 		vals := make([]any, len(cols))
 		valPtrs := make([]any, len(cols))
 		for i := range cols {
 			valPtrs[i] = &vals[i]
 		}
-		if err := rows.Scan(valPtrs...); err != nil {
+		if err = rows.Scan(valPtrs...); err != nil {
 			return nil, fmt.Errorf("row scan failed: %w", err)
+		}
+		rowNum++
+		if catalog.DebugLevel >= 4 && rowNum <= 3 {
+			fmt.Fprintf(os.Stderr, "-- [scan] row=%d\n", rowNum)
+			for i, col := range cols {
+				if vals[i] == nil {
+					fmt.Fprintf(os.Stderr, "--   %s: NULL\n", col)
+				} else {
+					switch v := vals[i].(type) {
+					case []byte:
+						raw := v
+						if len(raw) > 100 {
+							raw = raw[:100]
+						}
+						fmt.Fprintf(os.Stderr, "--   %s: []byte(len=%d) raw=%q\n", col, len(v), string(raw))
+					default:
+						fmt.Fprintf(os.Stderr, "--   %s: type=%T val=%v\n", col, v, v)
+					}
+				}
+			}
 		}
 		row := make(Row)
 		for i, col := range cols {
@@ -56,7 +84,12 @@ func (d *sqlDB) Query(query string) ([]Row, error) {
 				switch v := vals[i].(type) {
 				case []byte:
 					row[col] = string(v)
+				case string:
+					row[col] = v
 				default:
+					if catalog.DebugLevel >= 3 {
+						fmt.Fprintf(os.Stderr, "-- [scan] col=%s type=%T val=%v\n", col, v, v)
+					}
 					row[col] = fmt.Sprint(v)
 				}
 			}
@@ -124,7 +157,7 @@ func Open(tbl *catalog.Table) (Database, error) {
 		}
 		return nil, fmt.Errorf("failed to connect to %s: %w", storageType, err)
 	}
-	if err := db.Ping(); err != nil {
+	if err = db.Ping(); err != nil {
 		db.Close()
 		if tunnelClose != nil {
 			tunnelClose()
@@ -228,6 +261,7 @@ func ReadTable(tbl *catalog.Table) ([]Row, error) {
 		query = fmt.Sprintf("SELECT * FROM %s", dbTable)
 	}
 
+	debugQuery(query)
 	rows, err := d.Query(query)
 	if err != nil {
 		return nil, err

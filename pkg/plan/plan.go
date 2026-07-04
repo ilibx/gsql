@@ -2,6 +2,7 @@ package plan
 
 import (
 	"fmt"
+	"os"
 	"runtime"
 	"sort"
 	"strconv"
@@ -11,6 +12,54 @@ import (
 	"github.com/ilibx/gsql/pkg/parser"
 	"github.com/ilibx/gsql/pkg/storage"
 )
+
+// ExecuteDebugLevel controls debug output during plan execution.
+// 0=silent, 1=basic, 2=row counts, 3=+col names, 4=+sample rows, 5=+all rows.
+var ExecuteDebugLevel int
+
+func debugPrintRows(nodeType string, rows []storage.Row) {
+	level := ExecuteDebugLevel
+	if level < 2 {
+		return
+	}
+
+	colSet := make(map[string]bool)
+	for _, r := range rows {
+		for k := range r {
+			colSet[k] = true
+		}
+	}
+	cols := make([]string, 0, len(colSet))
+	for c := range colSet {
+		cols = append(cols, c)
+	}
+	sort.Strings(cols)
+
+	fmt.Fprintf(os.Stderr, "-- [%s] rows=%d", nodeType, len(rows))
+	if level >= 3 {
+		fmt.Fprintf(os.Stderr, " cols=[%s]", strings.Join(cols, ", "))
+	}
+	fmt.Fprintln(os.Stderr)
+
+	if level >= 4 && len(rows) > 0 {
+		maxPrint := 5
+		showAll := false
+		if level >= 5 {
+			maxPrint = len(rows)
+			showAll = true
+		}
+		for i := 0; i < maxPrint && i < len(rows); i++ {
+			vals := make([]string, len(cols))
+			for j, c := range cols {
+				vals[j] = rows[i][c]
+			}
+			fmt.Fprintf(os.Stderr, "--   %s\n", strings.Join(vals, ", "))
+		}
+		if !showAll && maxPrint < len(rows) {
+			fmt.Fprintf(os.Stderr, "--   ... (%d more rows)\n", len(rows)-maxPrint)
+		}
+	}
+}
 
 type AggregateDef struct {
 	FuncName string
@@ -49,13 +98,20 @@ func (n *TableScanNode) Type() string {
 }
 
 func (n *TableScanNode) Execute() ([]storage.Row, error) {
+	var rows []storage.Row
+	var err error
 	if len(n.CTE) > 0 {
-		return cloneRows(n.CTE), nil
-	}
-	if n.Table == nil {
+		rows = cloneRows(n.CTE)
+	} else if n.Table == nil {
 		return nil, fmt.Errorf("table scan node has no table")
+	} else {
+		rows, err = storage.ReadTableRows(n.Table, n.PartitionFilters...)
+		if err != nil {
+			return nil, err
+		}
 	}
-	return storage.ReadTableRows(n.Table, n.PartitionFilters...)
+	debugPrintRows(n.Type(), rows)
+	return rows, nil
 }
 
 func (n *TableScanNode) Explain(indent int) string {
@@ -84,7 +140,9 @@ func (n *FilterNode) Execute() ([]storage.Row, error) {
 	if err != nil {
 		return nil, err
 	}
-	return filterRowsParallel(rows, n.Predicate), nil
+	result := filterRowsParallel(rows, n.Predicate)
+	debugPrintRows(n.Type(), result)
+	return result, nil
 }
 
 func (n *FilterNode) Explain(indent int) string {
@@ -115,13 +173,16 @@ func (n *ProjectNode) Execute() ([]storage.Row, error) {
 	if err != nil {
 		return nil, err
 	}
+	var result []storage.Row
 	if len(n.Columns) == 1 && n.Columns[0] == "*" {
-		return rows, nil
+		result = rows
+	} else if len(n.Exprs) > 0 {
+		result = projectRowsWithExprs(rows, n.Columns, n.Exprs)
+	} else {
+		result = projectRowsParallel(rows, n.Columns)
 	}
-	if len(n.Exprs) > 0 {
-		return projectRowsWithExprs(rows, n.Columns, n.Exprs), nil
-	}
-	return projectRowsParallel(rows, n.Columns), nil
+	debugPrintRows(n.Type(), result)
+	return result, nil
 }
 
 func projectRowsWithExprs(rows []storage.Row, columns []string, exprs []parser.Expression) []storage.Row {
@@ -169,10 +230,13 @@ func (n *WindowNode) Execute() ([]storage.Row, error) {
 	if err != nil {
 		return nil, err
 	}
+	var result []storage.Row
 	if len(rows) == 0 || len(n.WindowExprs) == 0 {
-		return rows, nil
+		result = rows
+	} else {
+		result = computeWindowFunctions(rows, n.WindowExprs)
 	}
-	result := computeWindowFunctions(rows, n.WindowExprs)
+	debugPrintRows(n.Type(), result)
 	return result, nil
 }
 
@@ -223,6 +287,7 @@ func (n *SortNode) Execute() ([]storage.Row, error) {
 		return nil, err
 	}
 	sortRows(rows, n.OrderBy)
+	debugPrintRows(n.Type(), rows)
 	return rows, nil
 }
 
@@ -257,10 +322,14 @@ func (n *LimitNode) Execute() ([]storage.Row, error) {
 	if err != nil {
 		return nil, err
 	}
+	var result []storage.Row
 	if n.N >= len(rows) || n.N < 0 {
-		return rows, nil
+		result = rows
+	} else {
+		result = rows[:n.N]
 	}
-	return rows[:n.N], nil
+	debugPrintRows(n.Type(), result)
+	return result, nil
 }
 
 func (n *LimitNode) Explain(indent int) string {
@@ -288,6 +357,7 @@ func (n *AggregateNode) Execute() ([]storage.Row, error) {
 		return nil, err
 	}
 	if len(rows) == 0 {
+		debugPrintRows(n.Type(), rows)
 		return rows, nil
 	}
 
@@ -335,6 +405,7 @@ func (n *AggregateNode) Execute() ([]storage.Row, error) {
 		}
 		result = append(result, row)
 	}
+	debugPrintRows(n.Type(), result)
 	return result, nil
 }
 
@@ -447,6 +518,7 @@ func (n *LateralViewExplodeNode) Execute() ([]storage.Row, error) {
 			}
 		}
 	}
+	debugPrintRows(n.Type(), result)
 	return result, nil
 }
 
@@ -507,8 +579,9 @@ func (n *JoinNode) Execute() ([]storage.Row, error) {
 		normalize = func(s string) string { return s }
 	}
 
+	var result []storage.Row
+
 	if n.JoinType == "CROSS" {
-		var result []storage.Row
 		for _, lr := range leftRows {
 			for _, rr := range rightRows {
 				merged := make(storage.Row, len(lr)+len(rr))
@@ -521,6 +594,7 @@ func (n *JoinNode) Execute() ([]storage.Row, error) {
 				result = append(result, merged)
 			}
 		}
+		debugPrintRows(n.Type(), result)
 		return result, nil
 	}
 
@@ -534,7 +608,6 @@ func (n *JoinNode) Execute() ([]storage.Row, error) {
 	// Track which left and right keys were matched
 	matchedKeys := make(map[string]bool)
 
-	var result []storage.Row
 	for _, lr := range leftRows {
 		key := normalize(lr[leftCol])
 		if matched, ok := hash[key]; ok {
@@ -570,6 +643,7 @@ func (n *JoinNode) Execute() ([]storage.Row, error) {
 		}
 	}
 
+	debugPrintRows(n.Type(), result)
 	return result, nil
 }
 

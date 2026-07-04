@@ -251,6 +251,7 @@ func (e *Engine) executeSelectWithCTEs(query *parser.SelectQuery, cteTables map[
 		}
 	}
 
+	plan.ExecuteDebugLevel = e.VerboseLevel
 	rows, err := root.Execute()
 	if err != nil {
 		return nil, err
