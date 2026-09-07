@@ -215,6 +215,9 @@ func decodeExcel(r io.Reader, columns []catalog.ColumnDef, opts SerdeOptions) ([
 		if idx < opts.SkipHeaderLines {
 			continue
 		}
+		if opts.IncludeHeader && idx == opts.SkipHeaderLines {
+			continue // skip header row for xlsx read
+		}
 		r := make(Row)
 		for i, col := range columns {
 			if i < len(row) {

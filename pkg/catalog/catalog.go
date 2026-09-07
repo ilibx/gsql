@@ -3,6 +3,7 @@ package catalog
 import (
 	"fmt"
 	"net/url"
+	"path/filepath"
 	"strings"
 	"sync"
 )
@@ -10,6 +11,15 @@ import (
 // DebugLevel controls the verbosity of debug output.
 // 0 = silent, 1 = basic info, 2+ = more detail.
 var DebugLevel int
+
+// BasePath is the base directory for resolving relative paths (e.g. path='.').
+// Set via SetBasePath before executing SQL from a file.
+var BasePath string
+
+// SetBasePath sets the base directory for resolving relative local paths.
+func SetBasePath(p string) {
+	BasePath = filepath.Clean(p)
+}
 
 // Table defines a logical table and its data source options.
 type Table struct {

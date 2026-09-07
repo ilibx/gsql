@@ -2181,6 +2181,29 @@ func removeComments(sql string) string {
 				continue
 			}
 		}
+		// Strip inline -- comments (but not inside strings)
+		if !inString {
+			for i := 0; i < len(line); i++ {
+				if line[i] == '\'' || line[i] == '"' || line[i] == '`' {
+					quote := line[i]
+					for j := i + 1; j < len(line); j++ {
+						if line[j] == '\\' && j+1 < len(line) {
+							j++
+							continue
+						}
+						if line[j] == quote {
+							i = j
+							break
+						}
+					}
+					continue
+				}
+				if line[i] == '-' && i+1 < len(line) && line[i+1] == '-' {
+					line = line[:i]
+					break
+				}
+			}
+		}
 		cleaned = append(cleaned, line)
 		for i := 0; i < len(line); i++ {
 			ch := line[i]

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/flosch/pongo2/v5"
@@ -163,8 +164,12 @@ func main() {
 			var err error
 			if storage.IsURLScheme(arg) {
 				data, err = storage.ReadFromURL(context.Background(), arg)
+				catalog.SetBasePath("")
 			} else {
 				data, err = os.ReadFile(arg)
+				if err == nil {
+					catalog.SetBasePath(filepath.Dir(arg))
+				}
 			}
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "read sql file failed: %v\n", err)
@@ -211,10 +216,15 @@ func main() {
 			var err error
 			if strings.HasPrefix(arg, "local://") {
 				data, err = os.ReadFile(strings.TrimPrefix(arg, "local://"))
+				catalog.SetBasePath(filepath.Dir(strings.TrimPrefix(arg, "local://")))
 			} else if storage.IsURLScheme(arg) {
 				data, err = storage.ReadFromURL(context.Background(), arg)
+				catalog.SetBasePath("")
 			} else {
 				data, err = os.ReadFile(arg)
+				if err == nil {
+					catalog.SetBasePath(filepath.Dir(arg))
+				}
 			}
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "read template file failed: %v\n", err)
