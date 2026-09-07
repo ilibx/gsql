@@ -171,6 +171,7 @@ SELECT WIDTH_BUCKET(25, 20, 50, 5) AS bucket; -- 1（20-26 为第 1 桶，每桶
 |------|------|------|
 | `CONCAT(str1, str2, ...)` | 1+ | 拼接字符串（无分隔符） |
 | `CONCAT_WS(sep, str1, str2, ...)` | 2+ | 带分隔符拼接 |
+| `str1 || str2` | 2 | 字符串拼接（等效于 CONCAT(str1, str2)） |
 | `SUBSTRING(str, pos [, len])` | 2-3 | 截取子串，位置从 1 开始 |
 | `SUBSTR(str, pos [, len])` | 2-3 | SUBSTRING 别名 |
 | `UPPER(str)` / `UCASE(str)` | 1 | 转大写 |
@@ -192,6 +193,9 @@ SELECT WIDTH_BUCKET(25, 20, 50, 5) AS bucket; -- 1（20-26 为第 1 桶，每桶
 ```sql
 SELECT CONCAT('Hello', ' ', 'World') AS greeting;            -- Hello World
 SELECT CONCAT_WS('-', '2026', '01', '15') AS date_str;       -- 2026-01-15
+SELECT 'Hello' || ' ' || 'World' AS greeting;                -- Hello World
+SELECT name || ' from ' || city AS descr FROM users LIMIT 1; -- Alice from Beijing
+SELECT MD5(name || '@' || city) AS hash FROM users LIMIT 1;  -- c55450e60ef21e40ec05ddb3776c3743
 SELECT SUBSTRING('Hello World', 1, 5) AS sub1;               -- Hello
 SELECT SUBSTR('Hello World', 7) AS sub2;                     -- World
 SELECT UPPER('hello') AS u1, UCASE('world') AS u2;           -- HELLO, WORLD

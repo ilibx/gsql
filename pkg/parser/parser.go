@@ -19,6 +19,9 @@ type Parser struct {
 	l    *lexer
 	cur  Token
 	peek Token
+	// selectItemsConsumedNext is true when parseSelectItems already advanced past
+	// the last token (e.g. after handling AS or arithmetic expressions).
+	selectItemsConsumedNext bool
 }
 
 type lexer struct {
@@ -73,6 +76,7 @@ const (
 	PLUS
 	MINUS
 	DIV
+	PIPEPIPE
 	EXTERNAL
 	OVER
 	PARTITION
@@ -259,7 +263,7 @@ func tokenName(t TokenType) string {
 		return "HAVING"
 	case SEMICOLON:
 		return ";"
-	case CREATE, TABLE, WITH, AS, INSERT, OVERWRITE, SELECT, FROM, WHERE, ORDER, BY, LIMIT, IS, NULL_KEYWORD, NOT, IN_KEYWORD, DISTINCT, EXTERNAL, OVER, PARTITION, VALUES, MINUS, PLUS, DIV,
+	case CREATE, TABLE, WITH, AS, INSERT, OVERWRITE, SELECT, FROM, WHERE, ORDER, BY, LIMIT, IS, NULL_KEYWORD, NOT, IN_KEYWORD, DISTINCT, EXTERNAL, OVER, PARTITION, VALUES, MINUS, PLUS, DIV, PIPEPIPE,
 		UNION, CASE_KW, WHEN_KW, THEN_KW, ELSE_KW, END_KW, EXISTS_KW, LEFT_KW, RIGHT_KW, FULL_KW, SEMI_KW, CROSS_KW:
 		return strings.ToUpper(t.String())
 	default:
@@ -378,6 +382,8 @@ func (t TokenType) String() string {
 		return "SEMI"
 	case CROSS_KW:
 		return "CROSS"
+	case PIPEPIPE:
+		return "||"
 	default:
 		return ""
 	}
@@ -449,6 +455,13 @@ func (l *lexer) nextToken() Token {
 		tok = Token{Type: MINUS, Literal: "-"}
 	case '/':
 		tok = Token{Type: DIV, Literal: "/"}
+	case '|':
+		if l.peekChar() == '|' {
+			tok = Token{Type: PIPEPIPE, Literal: "||"}
+			l.readChar()
+		} else {
+			tok = Token{Type: ILLEGAL, Literal: "|"}
+		}
 	case '.':
 		tok = Token{Type: DOT, Literal: "."}
 	case ';':
@@ -745,7 +758,10 @@ func (p *Parser) parseSelectQuery() (*SelectQuery, error) {
 
 	// Advance past the last select item token so p.cur points to
 	// the next meaningful token (FROM, UNION, WHERE, etc.)
-	p.nextToken()
+	// Only advance if parseSelectItems didn't already do so.
+	if !p.selectItemsConsumedNext {
+		p.nextToken()
+	}
 
 	var tableName string
 	var tableAlias string
@@ -1557,12 +1573,24 @@ func (p *Parser) parseSelectItems() ([]string, []Expression, []AggregateExpr, []
 				columns = append(columns, litKey)
 				aggregates = append(aggregates, AggregateExpr{})
 				windowExprs = append(windowExprs, WindowExpr{})
-				if p.peekIs(AS) {
+			if p.peekIs(AS) {
 					p.nextToken()
 					p.nextToken()
 					if p.cur.Type == IDENT {
 						colAliases[p.cur.Literal] = litKey
 					}
+				}
+				if isArithmeticOp(p.peek) {
+					curLit := p.cur.Literal
+					p.nextToken()
+					expr, err := p.parseArithmeticExpr(&LiteralExpr{Value: curLit})
+					if err != nil {
+						return nil, nil, nil, nil, nil, err
+					}
+					litKey = exprToString(expr)
+					columns[len(columns)-1] = litKey
+					columnExprs[len(columnExprs)-1] = expr
+					p.nextToken()
 				}
 				if p.curIs(COMMA) {
 					p.nextToken()
@@ -1650,15 +1678,20 @@ func (p *Parser) parseSelectItems() ([]string, []Expression, []AggregateExpr, []
 					return nil, nil, nil, nil, nil, err
 				}
 				colName = exprToString(expr)
+				// Strip surrounding parens so the column key matches what the engine
+				// expects (e.g. "name || domain" instead of "(name || domain)")
+				if len(colName) >= 2 && colName[0] == '(' && colName[len(colName)-1] == ')' {
+					colName = colName[1 : len(colName)-1]
+				}
 				columns = append(columns, colName)
 				columnExprs = append(columnExprs, expr)
 				hasExpr = true
-				// After parseArithmeticExpr, p.cur is the first non-arithmetic token (possibly AS)
+				// After parseArithmeticExpr, p.cur is the first non-arithmetic
+				// token (possibly AS, comma, or FROM). No need to advance.
 				if p.curIs(AS) {
 					p.nextToken()
 					if p.cur.Type == IDENT {
 						colAliases[p.cur.Literal] = colName
-						p.nextToken()
 					}
 				}
 			} else {
@@ -1719,7 +1752,7 @@ func (p *Parser) parseFuncArgs() ([]string, error) {
 			if err != nil {
 				return nil, err
 			}
-			if p.cur.Type == PLUS || p.cur.Type == MINUS || p.cur.Type == ASTERISK || p.cur.Type == DIV {
+			if p.cur.Type == PLUS || p.cur.Type == MINUS || p.cur.Type == ASTERISK || p.cur.Type == DIV || p.cur.Type == PIPEPIPE {
 				// arithmetic expression as argument, e.g. ROUND(amount * discount, 2)
 				expr, err := p.parseArithmeticExpr(&ColumnRef{Name: col})
 				if err != nil {
@@ -1756,7 +1789,7 @@ func (p *Parser) parseFuncArgs() ([]string, error) {
 func isKeyword(t TokenType) bool {
 	return t > IDENT && t != STRING && t != NUMBER && t != ASTERISK && t != COMMA &&
 		t != LPAREN && t != RPAREN && t != EQUAL && t != NOT_EQUAL &&
-		t != LT && t != GT && t != LTE && t != GTE && t != SEMICOLON
+		t != LT && t != GT && t != LTE && t != GTE && t != SEMICOLON && t != PIPEPIPE
 }
 
 func (p *Parser) parseCastExpr() (*FuncCallExpr, error) {
@@ -1937,7 +1970,7 @@ const (
 
 func arithmeticPrecedence(tokType TokenType) int {
 	switch tokType {
-	case PLUS, MINUS:
+	case PLUS, MINUS, PIPEPIPE:
 		return precTerm
 	case ASTERISK, DIV:
 		return precFactor
@@ -1947,7 +1980,7 @@ func arithmeticPrecedence(tokType TokenType) int {
 }
 
 func isArithmeticOp(tok Token) bool {
-	return tok.Type == PLUS || tok.Type == MINUS || tok.Type == ASTERISK || tok.Type == DIV
+	return tok.Type == PLUS || tok.Type == MINUS || tok.Type == ASTERISK || tok.Type == DIV || tok.Type == PIPEPIPE
 }
 
 func (p *Parser) parseArithmeticExpr(left Expression) (Expression, error) {

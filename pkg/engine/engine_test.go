@@ -2303,3 +2303,58 @@ func TestEngineCaseWhen(t *testing.T) {
 		}
 	}
 }
+
+func TestEngineConcatOperator(t *testing.T) {
+	dir := t.TempDir()
+	csvData := "1,alice,example.com\n2,bob,example.com\n"
+	if err := os.WriteFile(filepath.Join(dir, "users.csv"), []byte(csvData), 0o644); err != nil {
+		t.Fatalf("write csv failed: %v", err)
+	}
+	cat := catalog.NewCatalog()
+	eng := NewEngine(cat)
+	tbl := &catalog.Table{
+		Name:    "users",
+		Columns: []catalog.ColumnDef{{Name: "id", Type: "INT"}, {Name: "name", Type: "STRING"}, {Name: "domain", Type: "STRING"}},
+		WithOptions: map[string]string{"storage": "local", "format": "csv", "path": dir, "file_pattern": "users.csv"},
+	}
+	if err := cat.CreateTable(tbl); err != nil {
+		t.Fatalf("create table failed: %v", err)
+	}
+	query := &parser.SelectQuery{
+		Table: "users",
+		Columns: []string{"name || '@' || domain AS email"},
+		ColumnAliases: map[string]string{"email": "name || '@' || domain AS email"},
+		ColumnExprs: []parser.Expression{
+			&parser.BinaryExpr{
+				Left: &parser.BinaryExpr{
+					Left:     &parser.ColumnRef{Name: "name"},
+					Operator: "||",
+					Right:    &parser.LiteralExpr{Value: "@"},
+				},
+				Operator: "||",
+				Right:    &parser.ColumnRef{Name: "domain"},
+			},
+		},
+	}
+	rows, err := eng.ExecuteSelect(query)
+	if err != nil {
+		t.Fatalf("concat operator query failed: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("expected 2 rows, got %d", len(rows))
+	}
+	expected := map[string]string{"alice": "alice@example.com", "bob": "bob@example.com"}
+	for _, row := range rows {
+		email := row["email"]
+		found := false
+		for _, v := range expected {
+			if email == v {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("unexpected email: %s", email)
+		}
+	}
+}

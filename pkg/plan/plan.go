@@ -979,6 +979,9 @@ func evaluateExpressionValue(row storage.Row, expr parser.Expression) string {
 	case *parser.BinaryExpr:
 		left := evaluateExpressionValue(row, v.Left)
 		right := evaluateExpressionValue(row, v.Right)
+		if v.Operator == "||" {
+			return left + right
+		}
 		leftNum, lErr := strconv.ParseFloat(left, 64)
 		rightNum, rErr := strconv.ParseFloat(right, 64)
 		if lErr == nil && rErr == nil {

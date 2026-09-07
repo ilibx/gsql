@@ -23,15 +23,17 @@ make test
 
 | 文档 | 说明 |
 |------|------|
+| [用法大全](docs/usage.md) | 所有 SQL 语法和内置函数的完整示范，每个示例均可直接执行 |
 | [基本用法](docs/basic.md) | 命令行、建表、查询、插入、分区表、EXPLAIN |
 | [内置函数](docs/functions.md) | 100+ Hive 风格函数：聚合、窗口、数学、字符串、日期、条件、杂项，支持嵌套调用 |
 | [存储后端](docs/storage.md) | Local、S3、FTP/SFTP、WebDAV、Git LFS、飞书 Lark |
 | [数据库](docs/database.md) | MySQL、PostgreSQL、SQLite 作为数据源/目标 |
 | [文件格式](docs/format.md) | CSV、JSON、Excel (.xlsx) 读写及选项 |
+| [模板 SQL](docs/template.md) | Jinja2 模板渲染与参数传递 |
 
 ## 核心特性
 
-- **SQL 语法**：`SELECT` / `WHERE` / `JOIN` / `GROUP BY` / `HAVING` / `ORDER BY` / `LIMIT` / `DISTINCT` / `UNION ALL` / `CTE (WITH)` / 子查询
+- **SQL 语法**：`SELECT` / `WHERE` / `JOIN` / `GROUP BY` / `HAVING` / `ORDER BY` / `LIMIT` / `DISTINCT` / `UNION ALL` / `CTE (WITH)` / 子查询 / `VALUES` / `||` 拼接
 - **表达式**：算术运算、比较、`IN` / `NOT IN`、`LIKE`、`IS NULL`、`CASE WHEN`
 - **函数**：100+ Hive 兼容内置函数（聚合、窗口、数学、字符串、日期、条件、正则、JSON、哈希、脱敏等），支持嵌套函数调用
 - **INSERT**：`INSERT OVERWRITE` 覆盖写入、`INSERT INTO` 追加

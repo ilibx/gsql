@@ -266,6 +266,22 @@ SELECT CONCAT(UPPER(name), ' from ', city) AS descr FROM users;
 SELECT ROUND(ABS(age * 1.5), 0) AS rounded FROM users;
 ```
 
+### 字符串拼接
+
+除了 `CONCAT()` 函数外，gsql 还支持 PostgreSQL 风格的 `||` 操作符：
+
+```sql
+SELECT name || ' from ' || city AS descr FROM users;
+SELECT 'Hello' || ' ' || 'World' AS greeting;              -- Hello World
+SELECT MD5(name || '@' || city) AS hash FROM users;
+```
+
+`||` 可与算术运算符混用，支持嵌套在函数中：
+```sql
+SELECT CONCAT(UPPER(name), '@', city) AS email FROM users;
+SELECT MD5(CONCAT(name, '-', city)) FROM users;
+```
+
 ### 别名
 
 ```sql
@@ -294,6 +310,12 @@ GROUP BY city
 HAVING cnt > 1;
 ```
 
+DISTINCT 聚合：
+```sql
+SELECT COUNT(DISTINCT city) AS city_cnt FROM users;
+SELECT COUNT(DISTINCT city), SUM(age) FROM users;
+```
+
 ### JOIN
 
 ```sql
@@ -302,7 +324,35 @@ FROM users u
 JOIN orders o ON u.id = o.user_id;
 ```
 
-支持 Hash Join，自动选择小表建哈希。
+支持所有 JOIN 类型：`INNER JOIN`（可省略 `INNER`）、`LEFT [OUTER] JOIN`、`RIGHT [OUTER] JOIN`、`FULL [OUTER] JOIN`、`LEFT SEMI JOIN`、`CROSS JOIN`。
+
+gsql 自动选择小表构建哈希表（Hash Join），且 ON 列方向可自动检测并交换：
+
+```sql
+-- LEFT JOIN（匹配不到时右表列为空）
+SELECT u.name, o.amount FROM users u LEFT JOIN orders o ON u.id = o.user_id;
+
+-- RIGHT JOIN
+SELECT u.name, o.amount FROM users u RIGHT JOIN orders o ON u.id = o.user_id;
+
+-- FULL JOIN
+SELECT u.name, o.amount FROM users u FULL JOIN orders o ON u.id = o.user_id;
+
+-- LEFT SEMI JOIN（只返回左表行，不重复）
+SELECT name FROM users LEFT SEMI JOIN orders ON users.id = orders.user_id;
+
+-- CROSS JOIN（笛卡尔积）
+SELECT name, amount FROM users CROSS JOIN orders;
+
+-- 多表 JOIN
+SELECT u.name, p.name AS product, o.amount
+FROM users u
+JOIN orders o ON u.id = o.user_id
+JOIN products p ON o.product_id = p.id
+WHERE o.amount > 500;
+```
+
+> **类型感知比较**：JOIN 的 ON 条件自动处理类型转换——`INT` 列去掉前导零（`001` 匹配 `1`），`DECIMAL` 去掉尾零（`10.50` 匹配 `10.5`），`STRING` 去除首尾空格。
 
 ### 子查询
 
@@ -350,6 +400,23 @@ SELECT 1 AS id, 'hello' AS msg, 3.14 AS pi;
 ```sql
 SELECT * FROM (VALUES (1, 'a'), (2, 'b'), (3, 'c')) AS t(id, name)
 WHERE id > 1;
+```
+
+### BETWEEN
+
+```sql
+SELECT * FROM users WHERE age BETWEEN 25 AND 35;
+SELECT * FROM users WHERE age NOT BETWEEN 40 AND 50;
+```
+
+### INSERT ... VALUES
+
+```sql
+INSERT OVERWRITE TABLE users VALUES (1, 'Alice', 'alice@example.com', 28, 'Beijing');
+
+INSERT INTO TABLE users
+VALUES (2, 'Bob', 'bob@example.com', 35, 'Shanghai'),
+       (3, 'Charlie', 'charlie@example.com', 42, 'Shenzhen');
 ```
 
 ---
@@ -429,6 +496,41 @@ WHERE year = 2026 GROUP BY month ORDER BY month;
 ```
 
 写入时自动按分区列值分组写入对应子目录。
+
+---
+
+## 内置函数
+
+详见 [functions.md](functions.md)。常用汇总：
+
+| 类别 | 函数 |
+|------|------|
+| 字符串 | `CONCAT`, `CONCAT_WS`, `SUBSTRING`, `UPPER`, `LOWER`, `TRIM`, `REPLACE`, `REVERSE`, `LPAD`, `RPAD`, `INITCAP`, `SPLIT` |
+| 数学 | `ROUND`, `FLOOR`, `CEIL`, `ABS`, `SQRT`, `POWER`, `MOD`, `RAND`, `GREATEST`, `LEAST` |
+| 日期 | `CURRENT_DATE`, `UNIX_TIMESTAMP`, `FROM_UNIXTIME`, `DATEDIFF`, `DATE_ADD`, `DATE_FORMAT`, `EXTRACT` |
+| 条件 | `IF`, `COALESCE`, `NVL`, `NULLIF`, `CAST` |
+| 聚合 | `COUNT`, `SUM`, `AVG`, `MIN`, `MAX`, `STDDEV`, `VARIANCE`, `COLLECT_LIST`, `PERCENTILE` |
+| 窗口 | `ROW_NUMBER`, `RANK`, `DENSE_RANK`, `LEAD`, `LAG`, `NTILE`, `FIRST_VALUE`, `LAST_VALUE` |
+| 正则 | `REGEXP_REPLACE`, `REGEXP_EXTRACT`, `REGEXP_LIKE` |
+| 编解码 | `BASE64`, `UNBASE64`, `HEX`, `UNHEX`, `ENCODE`, `DECODE` |
+| 哈希 | `MD5`, `SHA1`, `SHA2`, `CRC32`, `HASH` |
+| JSON | `GET_JSON_OBJECT`, `JSON_TUPLE` |
+| 脱敏 | `MASK`, `MASK_FIRST_N`, `MASK_LAST_N`, `MASK_SHOW_FIRST_N`, `MASK_SHOW_LAST_N` |
+| 杂项 | `CURRENT_USER`, `CURRENT_DATABASE`, `VERSION` |
+
+字符串拼接还支持 PostgreSQL 风格操作符：
+
+```sql
+SELECT name || ' from ' || city AS descr FROM users;
+SELECT MD5(CONCAT(name, '@', city)) AS hash FROM users;
+```
+
+所有函数支持任意层级嵌套：
+
+```sql
+SELECT UPPER(CONCAT(SUBSTR(name, 1, 1), '. ', city)) FROM users LIMIT 1;
+SELECT ROUND(ABS(age * 1.5), 0) FROM users LIMIT 1;
+```
 
 ---
 
