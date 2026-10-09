@@ -146,22 +146,22 @@ var keywords = map[string]TokenType{
 	"exists":    EXISTS_KW,
 	"values":    VALUES,
 	"explain":   EXPLAIN,
-	"cast":        CAST_KW,
-	"rows":        ROWS_KW,
-	"range":       RANGE_KW,
-	"between":     BETWEEN_KW,
-	"unbounded":   UNBOUNDED_KW,
-	"preceding":   PRECEDING_KW,
-	"following":   FOLLOWING_KW,
-	"current":     CURRENT_KW,
-	"lateral":     LATERAL_KW,
-	"view":        VIEW_KW,
-	"left":        LEFT_KW,
-	"right":       RIGHT_KW,
-	"full":        FULL_KW,
-	"semi":        SEMI_KW,
-	"cross":       CROSS_KW,
-	"outer":       OUTER_KW,
+	"cast":      CAST_KW,
+	"rows":      ROWS_KW,
+	"range":     RANGE_KW,
+	"between":   BETWEEN_KW,
+	"unbounded": UNBOUNDED_KW,
+	"preceding": PRECEDING_KW,
+	"following": FOLLOWING_KW,
+	"current":   CURRENT_KW,
+	"lateral":   LATERAL_KW,
+	"view":      VIEW_KW,
+	"left":      LEFT_KW,
+	"right":     RIGHT_KW,
+	"full":      FULL_KW,
+	"semi":      SEMI_KW,
+	"cross":     CROSS_KW,
+	"outer":     OUTER_KW,
 }
 
 func NewParser() *Parser {
@@ -436,10 +436,14 @@ func (l *lexer) nextToken() Token {
 			tok = Token{Type: ILLEGAL, Literal: string(l.ch)}
 		}
 	case '<':
-		if l.peekChar() == '=' {
+		switch l.peekChar() {
+		case '=':
 			tok = Token{Type: LTE, Literal: "<="}
 			l.readChar()
-		} else {
+		case '>':
+			tok = Token{Type: NOT_EQUAL, Literal: "!="}
+			l.readChar()
+		default:
 			tok = Token{Type: LT, Literal: "<"}
 		}
 	case '>':
@@ -1072,27 +1076,27 @@ func (p *Parser) parseSelectQuery() (*SelectQuery, error) {
 		p.nextToken()
 	}
 	query := &SelectQuery{
-		CTEs:          ctes,
-		Columns:       columns,
-		Table:         tableName,
-		TableAlias:    tableAlias,
-		FromSubquery:  fromSubquery,
-		FromAlias:     fromAlias,
-		FromValues:    fromValues,
+		CTEs:           ctes,
+		Columns:        columns,
+		Table:          tableName,
+		TableAlias:     tableAlias,
+		FromSubquery:   fromSubquery,
+		FromAlias:      fromAlias,
+		FromValues:     fromValues,
 		FromValuesCols: fromValuesCols,
-		ColumnExprs:   columnExprs,
-		Aggregates:    aggregates,
-		WindowExprs:   windowExprs,
-		Joins:         joins,
-		Distinct:      distinct,
-		Where:         where,
-		GroupBy:       groupBy,
-		Having:        having,
-		OrderBy:       orderBy,
-		Limit:         limit,
-		HasLimit:      hasLimit,
-		ColumnAliases: colAliases,
-		LateralViews:  lateralViews,
+		ColumnExprs:    columnExprs,
+		Aggregates:     aggregates,
+		WindowExprs:    windowExprs,
+		Joins:          joins,
+		Distinct:       distinct,
+		Where:          where,
+		GroupBy:        groupBy,
+		Having:         having,
+		OrderBy:        orderBy,
+		Limit:          limit,
+		HasLimit:       hasLimit,
+		ColumnAliases:  colAliases,
+		LateralViews:   lateralViews,
 	}
 	if len(aggregates) > 0 && len(groupBy) == 0 && len(columns) == 0 {
 		query.Columns = columns
@@ -1497,7 +1501,6 @@ func (p *Parser) parseInExpr(col string, not bool) (Expression, error) {
 	return &InExpr{Column: col, Not: not, Values: values}, nil
 }
 
-
 func isComparisonOperator(t TokenType) bool {
 	switch t {
 	case EQUAL, NOT_EQUAL, LT, GT, LTE, GTE, LIKE:
@@ -1573,7 +1576,7 @@ func (p *Parser) parseSelectItems() ([]string, []Expression, []AggregateExpr, []
 				columns = append(columns, litKey)
 				aggregates = append(aggregates, AggregateExpr{})
 				windowExprs = append(windowExprs, WindowExpr{})
-			if p.peekIs(AS) {
+				if p.peekIs(AS) {
 					p.nextToken()
 					p.nextToken()
 					if p.cur.Type == IDENT {
@@ -1734,19 +1737,19 @@ func (p *Parser) parseFuncArgs() ([]string, error) {
 	}
 	for {
 		if p.cur.Type == IDENT && p.peekIs(LPAREN) {
-				// nested function call, e.g. UPPER(SUBSTR(name,1,3))
-				funcName := strings.ToUpper(p.cur.Literal)
-				p.nextToken() // consume IDENT
-				p.nextToken() // consume LPAREN
-				innerArgs, err := p.parseFuncArgs()
-				if err != nil {
-					return nil, fmt.Errorf("inside %s(): %w", funcName, err)
-				}
-				if p.cur.Type != RPAREN {
-					return nil, fmt.Errorf("expected ) after arguments in %s()", funcName)
-				}
-				p.nextToken()
-				args = append(args, funcName+"("+strings.Join(innerArgs, ",")+")")
+			// nested function call, e.g. UPPER(SUBSTR(name,1,3))
+			funcName := strings.ToUpper(p.cur.Literal)
+			p.nextToken() // consume IDENT
+			p.nextToken() // consume LPAREN
+			innerArgs, err := p.parseFuncArgs()
+			if err != nil {
+				return nil, fmt.Errorf("inside %s(): %w", funcName, err)
+			}
+			if p.cur.Type != RPAREN {
+				return nil, fmt.Errorf("expected ) after arguments in %s()", funcName)
+			}
+			p.nextToken()
+			args = append(args, funcName+"("+strings.Join(innerArgs, ",")+")")
 		} else if p.cur.Type == IDENT {
 			col, err := p.parseDottedIdentifier()
 			if err != nil {
@@ -2219,6 +2222,7 @@ func removeComments(sql string) string {
 			for i := 0; i < len(line); i++ {
 				if line[i] == '\'' || line[i] == '"' || line[i] == '`' {
 					quote := line[i]
+					found := false
 					for j := i + 1; j < len(line); j++ {
 						if line[j] == '\\' && j+1 < len(line) {
 							j++
@@ -2226,8 +2230,13 @@ func removeComments(sql string) string {
 						}
 						if line[j] == quote {
 							i = j
+							found = true
 							break
 						}
+					}
+					if !found {
+						// 多行字符串：本行剩余内容都属于字符串值，不能把 -- 当注释截断
+						break
 					}
 					continue
 				}

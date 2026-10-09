@@ -213,11 +213,11 @@ func TestParseAggregateFunctions(t *testing.T) {
 
 func TestParseNestedFuncCall(t *testing.T) {
 	tests := []struct {
-		sql      string
-		colKey   string
-		aggFunc  string
-		aggCol   string
-		aggArgs  []string
+		sql     string
+		colKey  string
+		aggFunc string
+		aggCol  string
+		aggArgs []string
 	}{
 		{
 			sql:     `SELECT UPPER(SUBSTR(name, 1, 3)) FROM users;`,
@@ -1110,5 +1110,45 @@ func TestParseMultiUnion(t *testing.T) {
 	}
 	if second.UnionAll {
 		t.Error("expected UNION (not ALL) for second union")
+	}
+}
+
+func TestParseMultilineStringKeepsDoubleDash(t *testing.T) {
+	sql := "CREATE TABLE t (a string) WITH (\n" +
+		"  url = 'postgres://host/db', -- inline comment\n" +
+		"  ssh_key_data=`-----BEGIN RSA PRIVATE KEY-----\n" +
+		"AAAA\n" +
+		"-----END RSA PRIVATE KEY-----`\n" +
+		");"
+	stmts, err := NewParser().Parse(sql)
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+	ct, ok := stmts[0].(*CreateTableStmt)
+	if !ok {
+		t.Fatalf("expected CreateTableStmt, got %T", stmts[0])
+	}
+	key := ct.WithOptions["ssh_key_data"]
+	want := "-----BEGIN RSA PRIVATE KEY-----\nAAAA\n-----END RSA PRIVATE KEY-----"
+	if key != want {
+		t.Errorf("ssh_key_data = %q, want %q", key, want)
+	}
+	if u := ct.WithOptions["url"]; u != "postgres://host/db" {
+		t.Errorf("url = %q, want comment stripped outside string", u)
+	}
+}
+
+func TestParseNotEqualOperator(t *testing.T) {
+	for _, sql := range []string{
+		"SELECT * FROM t WHERE a <> 1;",
+		"SELECT * FROM t WHERE a != 1;",
+		"SELECT CASE WHEN a <> b OR c <> d THEN 1 ELSE 0 END AS diff FROM t;",
+	} {
+		stmts, err := NewParser().Parse(sql)
+		if err != nil {
+			t.Errorf("%s: parse failed: %v", sql, err)
+			continue
+		}
+		_ = stmts
 	}
 }
