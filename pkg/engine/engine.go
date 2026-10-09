@@ -7,8 +7,8 @@ import (
 	"strings"
 
 	"github.com/ilibx/gsql/pkg/catalog"
-	"github.com/ilibx/gsql/pkg/plan"
 	"github.com/ilibx/gsql/pkg/parser"
+	"github.com/ilibx/gsql/pkg/plan"
 	"github.com/ilibx/gsql/pkg/storage"
 )
 
@@ -271,12 +271,22 @@ func (e *Engine) executeSelectWithCTEs(query *parser.SelectQuery, cteTables map[
 
 	// apply column aliases to row keys (after UNION so both sides get remapped)
 	if len(query.ColumnAliases) > 0 {
-		origToAlias := make(map[string]string)
+		exactToAlias := make(map[string]string) // qualified orig -> alias
+		bareToAlias := make(map[string]string)  // bare orig -> alias (only for unqualified orig)
 		for alias, orig := range query.ColumnAliases {
-			origToAlias[stripTableAlias(orig)] = alias
+			exactToAlias[orig] = alias
+			if !strings.Contains(orig, ".") {
+				bareToAlias[orig] = alias
+			}
 		}
 		for _, row := range rows {
-			for orig, alias := range origToAlias {
+			for orig, alias := range exactToAlias {
+				if val, exists := row[orig]; exists {
+					row[alias] = val
+					delete(row, orig)
+				}
+			}
+			for orig, alias := range bareToAlias {
 				if val, exists := row[orig]; exists {
 					row[alias] = val
 					delete(row, orig)
@@ -285,7 +295,36 @@ func (e *Engine) executeSelectWithCTEs(query *parser.SelectQuery, cteTables map[
 		}
 	}
 
+	// de-qualify remaining table-prefixed column names where the bare suffix is
+	// unambiguous (e.g. "l.input" -> "input" when no other column is named "input")
+	if e.hasJoinRef(query) {
+		for _, row := range rows {
+			type rename struct{ from, to string }
+			var renames []rename
+			for k := range row {
+				idx := strings.IndexByte(k, '.')
+				if idx < 0 || idx == len(k)-1 {
+					continue
+				}
+				bare := k[idx+1:]
+				if _, taken := row[bare]; taken {
+					continue // ambiguous: keep the qualified name
+				}
+				renames = append(renames, rename{k, bare})
+			}
+			for _, r := range renames {
+				row[r.to] = row[r.from]
+				delete(row, r.from)
+			}
+		}
+	}
+
 	return rows, nil
+}
+
+// hasJoinRef reports whether the query contains a FROM-side join.
+func (e *Engine) hasJoinRef(sel *parser.SelectQuery) bool {
+	return len(sel.Joins) > 0
 }
 
 func (e *Engine) buildLogicalPlan(sel *parser.SelectQuery, cteTables map[string][]storage.Row) (plan.LogicalNode, error) {
@@ -338,6 +377,17 @@ func (e *Engine) addJoins(root plan.LogicalNode, sel *parser.SelectQuery, cteTab
 			leftCol, rightCol = rightCol, leftCol
 		}
 		joinNode := plan.NewLogicalJoinWithType(root, rightRoot, leftCol, rightCol, join.JoinType)
+		// same-named columns on either side are stored qualified with these prefixes
+		leftPrefix := sel.TableAlias
+		if leftPrefix == "" {
+			leftPrefix = sel.Table
+		}
+		rightPrefix := join.RightAlias
+		if rightPrefix == "" {
+			rightPrefix = join.RightTable
+		}
+		joinNode.LeftPrefix = leftPrefix
+		joinNode.RightPrefix = rightPrefix
 		if leftType := e.getColumnType(sel.Table, leftCol); leftType != "" {
 			joinNode.NormalizeKey = NormalizeKeyForType(leftType)
 		}
@@ -477,7 +527,7 @@ func (e *Engine) addSortAndLimit(root plan.LogicalNode, sel *parser.SelectQuery)
 	for i, o := range sel.OrderBy {
 		s := stripTableAlias(o.Column)
 		if alias, ok := sel.ColumnAliases[s]; ok {
-			s = stripTableAlias(alias)
+			s = alias
 		}
 		orderBy[i] = parser.SortOrder{Column: s, Desc: o.Desc}
 	}
@@ -498,13 +548,13 @@ func (e *Engine) addProjection(root plan.LogicalNode, sel *parser.SelectQuery) p
 		if stripTableAlias(col) == "*" {
 			expanded := e.expandStarColumns(sel)
 			for _, ec := range expanded {
-				colName := stripTableAlias(ec)
+				colName := e.projectColumnKey(ec, sel)
 				columns = append(columns, colName)
 				columnExprs = append(columnExprs, nil)
 			}
 			continue
 		}
-		stripped := stripTableAlias(col)
+		stripped := e.projectColumnKey(col, sel)
 		columns = append(columns, stripped)
 		if i < len(sel.ColumnExprs) && sel.ColumnExprs[i] != nil {
 			columnExprs = append(columnExprs, sel.ColumnExprs[i])
@@ -524,6 +574,24 @@ func (e *Engine) addProjection(root plan.LogicalNode, sel *parser.SelectQuery) p
 		root = plan.NewLogicalProject(root, columns, columnExprs)
 	}
 	return root
+}
+
+// projectColumnKey decides the output row key for a selected column.
+// References to the right side of a join keep their table qualifier so that
+// same-named columns from both tables stay distinguishable; everything else
+// uses the bare column name.
+func (e *Engine) projectColumnKey(col string, sel *parser.SelectQuery) string {
+	idx := strings.IndexByte(col, '.')
+	if idx <= 0 {
+		return col
+	}
+	prefix := col[:idx]
+	for _, join := range sel.Joins {
+		if prefix == join.RightAlias || prefix == join.RightTable {
+			return col
+		}
+	}
+	return col[idx+1:]
 }
 
 // makeFuncCallExpr checks if a column key looks like a function call (e.g. "UPPER(name)")

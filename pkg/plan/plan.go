@@ -151,9 +151,9 @@ func (n *FilterNode) Explain(indent int) string {
 }
 
 type ProjectNode struct {
-	Child     PlanNode
-	Columns   []string
-	Exprs     []parser.Expression // parallel to Columns, nil means plain column ref
+	Child   PlanNode
+	Columns []string
+	Exprs   []parser.Expression // parallel to Columns, nil means plain column ref
 }
 
 func NewProjectNode(child PlanNode, columns []string) *ProjectNode {
@@ -162,6 +162,29 @@ func NewProjectNode(child PlanNode, columns []string) *ProjectNode {
 
 func NewProjectNodeWithExprs(child PlanNode, columns []string, exprs []parser.Expression) *ProjectNode {
 	return &ProjectNode{Child: child, Columns: columns, Exprs: exprs}
+}
+
+// projectRowValue resolves a column reference against a row.
+// Lookup order: exact (table-qualified) key, then bare column name, and
+// finally — for a bare reference — a uniquely matching qualified key
+// (e.g. "input" finds "l.input" when the left side has no bare "input").
+func projectRowValue(row storage.Row, col string) string {
+	if val, ok := row[col]; ok {
+		return val
+	}
+	bare := stripColAlias(col)
+	if val, ok := row[bare]; ok {
+		return val
+	}
+	if bare == col {
+		prefix := bare + "."
+		for k, v := range row {
+			if strings.HasPrefix(k, prefix) {
+				return v
+			}
+		}
+	}
+	return ""
 }
 
 func (n *ProjectNode) Type() string {
@@ -193,7 +216,7 @@ func projectRowsWithExprs(rows []storage.Row, columns []string, exprs []parser.E
 			if i < len(exprs) && exprs[i] != nil {
 				projectedRow[col] = evaluateExpressionValue(row, exprs[i])
 			} else {
-				projectedRow[col] = row[col]
+				projectedRow[col] = projectRowValue(row, col)
 			}
 		}
 		result = append(result, projectedRow)
@@ -432,13 +455,13 @@ func makeGroupKey(row storage.Row, cols []string) string {
 }
 
 type LateralViewExplodeNode struct {
-	Child     PlanNode
-	Col       string // column to explode
-	Alias     string // output column alias (value for POSEXPLODE/EXPLODE(map))
-	PosAlias  string // position column alias (for POSEXPLODE) or key alias (for EXPLODE(map))
-	IsOuter   bool   // OUTER: keep row even if explode column is empty
-	WithPos   bool   // true for POSEXPLODE (integer index)
-	WithMap   bool   // true for EXPLODE(map) (key-value pairs)
+	Child    PlanNode
+	Col      string // column to explode
+	Alias    string // output column alias (value for POSEXPLODE/EXPLODE(map))
+	PosAlias string // position column alias (for POSEXPLODE) or key alias (for EXPLODE(map))
+	IsOuter  bool   // OUTER: keep row even if explode column is empty
+	WithPos  bool   // true for POSEXPLODE (integer index)
+	WithMap  bool   // true for EXPLODE(map) (key-value pairs)
 }
 
 func NewLateralViewExplodeNode(child PlanNode, col, alias string, isOuter ...bool) *LateralViewExplodeNode {
@@ -541,11 +564,15 @@ func (n *LateralViewExplodeNode) Explain(indent int) string {
 }
 
 type JoinNode struct {
-	Left         PlanNode
-	Right        PlanNode
-	LeftColumn   string
-	RightColumn  string
-	JoinType     string // INNER, LEFT, RIGHT, FULL, SEMI, CROSS
+	Left        PlanNode
+	Right       PlanNode
+	LeftColumn  string
+	RightColumn string
+	JoinType    string
+	// RightPrefix is the table alias (or name) of the right side. When the
+	// right row has a column name that collides with the left row, the right
+	// value is stored under "RightPrefix.column" so both sides stay readable.
+	RightPrefix  string
 	NormalizeKey func(string) string // optional: normalizes join key values for type-aware comparison
 }
 
@@ -622,7 +649,14 @@ func (n *JoinNode) Execute() ([]storage.Row, error) {
 					merged[k] = v
 				}
 				for k, v := range rr {
-					merged[k] = v
+					if _, conflict := merged[k]; conflict && n.RightPrefix != "" {
+						// same-named column on both sides: keep the left value bare
+						// and store the right value qualified so expressions like
+						// "alias.col" can still read it
+						merged[n.RightPrefix+"."+k] = v
+					} else {
+						merged[k] = v
+					}
 				}
 				result = append(result, merged)
 			}
@@ -775,7 +809,7 @@ func projectRowsParallel(rows []storage.Row, columns []string) []storage.Row {
 func sortRows(rows []storage.Row, orderBy []parser.SortOrder) {
 	sort.SliceStable(rows, func(i, j int) bool {
 		for _, o := range orderBy {
-			vi, vj := rows[i][o.Column], rows[j][o.Column]
+			vi, vj := projectRowValue(rows[i], o.Column), projectRowValue(rows[j], o.Column)
 			cmp := compareNumeric(vi, vj)
 			if cmp != 0 {
 				if o.Desc {
@@ -820,19 +854,12 @@ func evaluateExpression(row storage.Row, expr parser.Expression) bool {
 			left = evaluateExpressionValue(row, v.Expr)
 		} else if v.Column == "" {
 			left = v.Value
-		} else if strings.Contains(v.Column, "(") {
-			// function call result stored in Expr, or compute from column name
-			if v.Expr != nil {
-				left = evaluateExpressionValue(row, v.Expr)
-			} else {
-				left = row[stripColAlias(v.Column)]
-			}
 		} else {
-			left = row[stripColAlias(v.Column)]
+			left = projectRowValue(row, v.Column)
 		}
 		var right string
 		if v.RightColumn != "" {
-			right = row[stripColAlias(v.RightColumn)]
+			right = projectRowValue(row, v.RightColumn)
 		} else {
 			right = v.Value
 		}
@@ -863,13 +890,13 @@ func evaluateExpression(row storage.Row, expr parser.Expression) bool {
 			return false
 		}
 	case *parser.NullTestExpr:
-		val := row[stripColAlias(v.Column)]
+		val := projectRowValue(row, v.Column)
 		if v.IsNull {
 			return val == ""
 		}
 		return val != ""
 	case *parser.InExpr:
-		val := row[stripColAlias(v.Column)]
+		val := projectRowValue(row, v.Column)
 		if v.Not {
 			return !stringInSlice(val, v.Values)
 		}
@@ -914,20 +941,20 @@ func stripColAlias(col string) string {
 func evaluateExpressionValue(row storage.Row, expr parser.Expression) string {
 	switch v := expr.(type) {
 	case *parser.ColumnRef:
-		return row[stripColAlias(v.Name)]
+		return projectRowValue(row, v.Name)
 	case *parser.ComparisonExpr:
 		if v.Expr != nil {
 			return evaluateExpressionValue(row, v.Expr)
 		}
 		if v.RightColumn != "" {
-			return row[stripColAlias(v.RightColumn)]
+			return projectRowValue(row, v.RightColumn)
 		}
 		if v.Column == "" {
 			return v.Value
 		}
-		return row[stripColAlias(v.Column)]
+		return projectRowValue(row, v.Column)
 	case *parser.NullTestExpr:
-		val := row[stripColAlias(v.Column)]
+		val := projectRowValue(row, v.Column)
 		if v.IsNull {
 			if val == "" {
 				return "true"
@@ -1030,13 +1057,12 @@ func splitFuncArgs(s string) []string {
 }
 
 func resolveFuncArg(row storage.Row, arg string) string {
-	// First try as a direct row key (stripped of table alias)
-	plain := stripColAlias(arg)
-	if val, exists := row[plain]; exists {
+	// Prefer the exact (table-qualified) key, fall back to the bare column name
+	if val, exists := row[arg]; exists {
 		return val
 	}
-	// Try the raw arg as a row key
-	if val, exists := row[arg]; exists {
+	plain := stripColAlias(arg)
+	if val, exists := row[plain]; exists {
 		return val
 	}
 	// Check for nested function call: IDENT(...)
@@ -1272,6 +1298,7 @@ func LogicalToPhysical(node LogicalNode, ctx *PhysicalPlanContext) (PlanNode, er
 		}
 		jn := NewJoinNodeWithType(left, right, n.LeftColumn, n.RightColumn, n.JoinType)
 		jn.NormalizeKey = n.NormalizeKey
+		jn.RightPrefix = n.RightPrefix
 		return jn, nil
 	case *LogicalAggregate:
 		child, err := LogicalToPhysical(n.Child, ctx)

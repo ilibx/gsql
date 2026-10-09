@@ -69,7 +69,9 @@ type LogicalJoin struct {
 	Right        LogicalNode
 	LeftColumn   string
 	RightColumn  string
-	JoinType     string // INNER, LEFT, RIGHT, FULL, SEMI, CROSS
+	JoinType     string              // INNER, LEFT, RIGHT, FULL, SEMI, CROSS
+	LeftPrefix   string              // left-side alias/name for qualifying colliding columns
+	RightPrefix  string              // right-side alias/name for qualifying colliding columns
 	NormalizeKey func(string) string // optional: normalizes join key values for type-aware comparison
 }
 

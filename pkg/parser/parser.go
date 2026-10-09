@@ -1530,15 +1530,18 @@ func (p *Parser) parseSelectItems() ([]string, []Expression, []AggregateExpr, []
 			columnExprs = append(columnExprs, caseExpr)
 			aggregates = append(aggregates, AggregateExpr{})
 			windowExprs = append(windowExprs, WindowExpr{})
-			if p.curIs(AS) || (p.cur.Type == IDENT && len(columns) > 0) {
-				if p.curIs(AS) {
-					p.nextToken()
-				}
-				if p.cur.Type == IDENT {
-					colAliases[p.cur.Literal] = colKey
-				}
+			if p.curIs(AS) {
+				p.nextToken()
 			}
-			if p.cur.Type == COMMA {
+			if p.cur.Type == IDENT {
+				colAliases[p.cur.Literal] = colKey
+			}
+			if p.curIs(COMMA) {
+				p.nextToken()
+				continue
+			}
+			if p.peekIs(COMMA) {
+				p.nextToken()
 				p.nextToken()
 				continue
 			}
@@ -1554,15 +1557,18 @@ func (p *Parser) parseSelectItems() ([]string, []Expression, []AggregateExpr, []
 			columnExprs = append(columnExprs, castExpr)
 			aggregates = append(aggregates, AggregateExpr{})
 			windowExprs = append(windowExprs, WindowExpr{})
-			if p.curIs(AS) || (p.cur.Type == IDENT && len(columns) > 0) {
-				if p.curIs(AS) {
-					p.nextToken()
-				}
-				if p.cur.Type == IDENT {
-					colAliases[p.cur.Literal] = colKey
-				}
+			if p.curIs(AS) {
+				p.nextToken()
 			}
-			if p.cur.Type == COMMA {
+			if p.cur.Type == IDENT {
+				colAliases[p.cur.Literal] = colKey
+			}
+			if p.curIs(COMMA) {
+				p.nextToken()
+				continue
+			}
+			if p.peekIs(COMMA) {
+				p.nextToken()
 				p.nextToken()
 				continue
 			}

@@ -145,6 +145,8 @@ func reorderJoins(node LogicalNode, tables map[string]*catalog.Table) LogicalNod
 	if !math.IsInf(leftRows, 1) && !math.IsInf(rightRows, 1) && rightRows > leftRows {
 		swapped := NewLogicalJoinWithType(join.Right, join.Left, join.RightColumn, join.LeftColumn, join.JoinType)
 		swapped.NormalizeKey = join.NormalizeKey
+		swapped.LeftPrefix = join.RightPrefix
+		swapped.RightPrefix = join.LeftPrefix
 		return swapped
 	}
 	return node
@@ -399,6 +401,8 @@ func rebuildNode(node LogicalNode, children []LogicalNode) LogicalNode {
 		}
 		rebuilt := NewLogicalJoinWithType(children[0], children[1], n.LeftColumn, n.RightColumn, n.JoinType)
 		rebuilt.NormalizeKey = n.NormalizeKey
+		rebuilt.LeftPrefix = n.LeftPrefix
+		rebuilt.RightPrefix = n.RightPrefix
 		return rebuilt
 	case *LogicalAggregate:
 		if len(children) != 1 {
