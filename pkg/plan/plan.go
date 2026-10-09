@@ -3,7 +3,6 @@ package plan
 import (
 	"fmt"
 	"os"
-	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -70,6 +69,10 @@ type AggregateDef struct {
 
 type PlanNode interface {
 	Type() string
+	// Iterate streams rows on demand. It is the primary execution path.
+	Iterate() (RowIter, error)
+	// Execute materializes Iterate's output; kept for compatibility with
+	// callers (tests, engine top level) that expect a row slice.
 	Execute() ([]storage.Row, error)
 	Explain(indent int) string
 }
@@ -97,21 +100,18 @@ func (n *TableScanNode) Type() string {
 	return "TableScan"
 }
 
-func (n *TableScanNode) Execute() ([]storage.Row, error) {
-	var rows []storage.Row
-	var err error
+func (n *TableScanNode) Iterate() (RowIter, error) {
 	if len(n.CTE) > 0 {
-		rows = cloneRows(n.CTE)
-	} else if n.Table == nil {
-		return nil, fmt.Errorf("table scan node has no table")
-	} else {
-		rows, err = storage.ReadTableRows(n.Table, n.PartitionFilters...)
-		if err != nil {
-			return nil, err
-		}
+		return newSliceIter(cloneRows(n.CTE)), nil
 	}
-	debugPrintRows(n.Type(), rows)
-	return rows, nil
+	if n.Table == nil {
+		return nil, fmt.Errorf("table scan node has no table")
+	}
+	return storage.OpenTableIter(n.Table, n.PartitionFilters...)
+}
+
+func (n *TableScanNode) Execute() ([]storage.Row, error) {
+	return materialize(n)
 }
 
 func (n *TableScanNode) Explain(indent int) string {
@@ -135,14 +135,16 @@ func (n *FilterNode) Type() string {
 	return "Filter"
 }
 
-func (n *FilterNode) Execute() ([]storage.Row, error) {
-	rows, err := n.Child.Execute()
+func (n *FilterNode) Iterate() (RowIter, error) {
+	child, err := n.Child.Iterate()
 	if err != nil {
 		return nil, err
 	}
-	result := filterRowsParallel(rows, n.Predicate)
-	debugPrintRows(n.Type(), result)
-	return result, nil
+	return &filterIter{child: child, predicate: n.Predicate}, nil
+}
+
+func (n *FilterNode) Execute() ([]storage.Row, error) {
+	return materialize(n)
 }
 
 func (n *FilterNode) Explain(indent int) string {
@@ -191,37 +193,19 @@ func (n *ProjectNode) Type() string {
 	return "Project"
 }
 
-func (n *ProjectNode) Execute() ([]storage.Row, error) {
-	rows, err := n.Child.Execute()
+func (n *ProjectNode) Iterate() (RowIter, error) {
+	child, err := n.Child.Iterate()
 	if err != nil {
 		return nil, err
 	}
-	var result []storage.Row
 	if len(n.Columns) == 1 && n.Columns[0] == "*" {
-		result = rows
-	} else if len(n.Exprs) > 0 {
-		result = projectRowsWithExprs(rows, n.Columns, n.Exprs)
-	} else {
-		result = projectRowsParallel(rows, n.Columns)
+		return child, nil
 	}
-	debugPrintRows(n.Type(), result)
-	return result, nil
+	return &projectIter{child: child, columns: n.Columns, exprs: n.Exprs}, nil
 }
 
-func projectRowsWithExprs(rows []storage.Row, columns []string, exprs []parser.Expression) []storage.Row {
-	result := make([]storage.Row, 0, len(rows))
-	for _, row := range rows {
-		projectedRow := make(storage.Row)
-		for i, col := range columns {
-			if i < len(exprs) && exprs[i] != nil {
-				projectedRow[col] = evaluateExpressionValue(row, exprs[i])
-			} else {
-				projectedRow[col] = projectRowValue(row, col)
-			}
-		}
-		result = append(result, projectedRow)
-	}
-	return result
+func (n *ProjectNode) Execute() ([]storage.Row, error) {
+	return materialize(n)
 }
 
 func (n *ProjectNode) Explain(indent int) string {
@@ -248,19 +232,24 @@ func NewWindowNode(child PlanNode, windowExprs []parser.WindowExpr) *WindowNode 
 
 func (n *WindowNode) Type() string { return "Window" }
 
-func (n *WindowNode) Execute() ([]storage.Row, error) {
-	rows, err := n.Child.Execute()
+func (n *WindowNode) Iterate() (RowIter, error) {
+	// window functions need the full input to compute frames
+	child, err := n.Child.Iterate()
 	if err != nil {
 		return nil, err
 	}
-	var result []storage.Row
-	if len(rows) == 0 || len(n.WindowExprs) == 0 {
-		result = rows
-	} else {
-		result = computeWindowFunctions(rows, n.WindowExprs)
+	rows, err := Collect(child)
+	if err != nil {
+		return nil, err
 	}
-	debugPrintRows(n.Type(), result)
-	return result, nil
+	if len(rows) > 0 && len(n.WindowExprs) > 0 {
+		rows = computeWindowFunctions(rows, n.WindowExprs)
+	}
+	return newSliceIter(rows), nil
+}
+
+func (n *WindowNode) Execute() ([]storage.Row, error) {
+	return materialize(n)
 }
 
 func (n *WindowNode) Explain(indent int) string {
@@ -304,14 +293,22 @@ func (n *SortNode) Type() string {
 	return "Sort"
 }
 
-func (n *SortNode) Execute() ([]storage.Row, error) {
-	rows, err := n.Child.Execute()
+func (n *SortNode) Iterate() (RowIter, error) {
+	// sorting requires the full input
+	child, err := n.Child.Iterate()
+	if err != nil {
+		return nil, err
+	}
+	rows, err := Collect(child)
 	if err != nil {
 		return nil, err
 	}
 	sortRows(rows, n.OrderBy)
-	debugPrintRows(n.Type(), rows)
-	return rows, nil
+	return newSliceIter(rows), nil
+}
+
+func (n *SortNode) Execute() ([]storage.Row, error) {
+	return materialize(n)
 }
 
 func (n *SortNode) Explain(indent int) string {
@@ -340,19 +337,19 @@ func (n *LimitNode) Type() string {
 	return "Limit"
 }
 
-func (n *LimitNode) Execute() ([]storage.Row, error) {
-	rows, err := n.Child.Execute()
+func (n *LimitNode) Iterate() (RowIter, error) {
+	child, err := n.Child.Iterate()
 	if err != nil {
 		return nil, err
 	}
-	var result []storage.Row
-	if n.N >= len(rows) || n.N < 0 {
-		result = rows
-	} else {
-		result = rows[:n.N]
+	if n.N >= 0 {
+		return &limitIter{child: child, rest: n.N}, nil
 	}
-	debugPrintRows(n.Type(), result)
-	return result, nil
+	return child, nil
+}
+
+func (n *LimitNode) Execute() ([]storage.Row, error) {
+	return materialize(n)
 }
 
 func (n *LimitNode) Explain(indent int) string {
@@ -374,14 +371,18 @@ func (n *AggregateNode) Type() string {
 	return "Aggregate"
 }
 
-func (n *AggregateNode) Execute() ([]storage.Row, error) {
-	rows, err := n.Child.Execute()
+func (n *AggregateNode) Iterate() (RowIter, error) {
+	// aggregation needs the full input to finish all groups
+	child, err := n.Child.Iterate()
+	if err != nil {
+		return nil, err
+	}
+	rows, err := Collect(child)
 	if err != nil {
 		return nil, err
 	}
 	if len(rows) == 0 {
-		debugPrintRows(n.Type(), rows)
-		return rows, nil
+		return newSliceIter(rows), nil
 	}
 
 	type groupEntry struct {
@@ -428,8 +429,11 @@ func (n *AggregateNode) Execute() ([]storage.Row, error) {
 		}
 		result = append(result, row)
 	}
-	debugPrintRows(n.Type(), result)
-	return result, nil
+	return newSliceIter(result), nil
+}
+
+func (n *AggregateNode) Execute() ([]storage.Row, error) {
+	return materialize(n)
 }
 
 func (n *AggregateNode) Explain(indent int) string {
@@ -479,70 +483,16 @@ func (n *LateralViewExplodeNode) Type() string {
 	return "LateralViewExplode"
 }
 
-func (n *LateralViewExplodeNode) Execute() ([]storage.Row, error) {
-	input, err := n.Child.Execute()
+func (n *LateralViewExplodeNode) Iterate() (RowIter, error) {
+	child, err := n.Child.Iterate()
 	if err != nil {
 		return nil, err
 	}
-	var result []storage.Row
-	for _, row := range input {
-		val := row[n.Col]
-		var elements []string
-		if val == "" {
-			elements = nil
-		} else {
-			elements = strings.Split(val, ",")
-		}
-		if len(elements) == 0 {
-			if n.IsOuter {
-				newRow := make(storage.Row)
-				for k, v := range row {
-					newRow[k] = v
-				}
-				newRow[n.Alias] = ""
-				if n.WithPos || n.WithMap {
-					newRow[n.PosAlias] = ""
-				}
-				result = append(result, newRow)
-			}
-			continue
-		}
-		if n.WithMap {
-			// EXPLODE(map): elements come as k1,v1,k2,v2,...
-			for i := 0; i+1 < len(elements); i += 2 {
-				newRow := make(storage.Row)
-				for k, v := range row {
-					newRow[k] = v
-				}
-				newRow[n.PosAlias] = strings.TrimSpace(elements[i])
-				newRow[n.Alias] = strings.TrimSpace(elements[i+1])
-				result = append(result, newRow)
-			}
-		} else if n.WithPos {
-			// POSEXPLODE: index + value
-			for idx, elem := range elements {
-				newRow := make(storage.Row)
-				for k, v := range row {
-					newRow[k] = v
-				}
-				newRow[n.Alias] = strings.TrimSpace(elem)
-				newRow[n.PosAlias] = strconv.Itoa(idx)
-				result = append(result, newRow)
-			}
-		} else {
-			// EXPLODE(arr): just values
-			for _, elem := range elements {
-				newRow := make(storage.Row)
-				for k, v := range row {
-					newRow[k] = v
-				}
-				newRow[n.Alias] = strings.TrimSpace(elem)
-				result = append(result, newRow)
-			}
-		}
-	}
-	debugPrintRows(n.Type(), result)
-	return result, nil
+	return &lateralViewIter{node: n, child: child}, nil
+}
+
+func (n *LateralViewExplodeNode) Execute() ([]storage.Row, error) {
+	return materialize(n)
 }
 
 func (n *LateralViewExplodeNode) Explain(indent int) string {
@@ -561,6 +511,82 @@ func (n *LateralViewExplodeNode) Explain(indent int) string {
 		pos = fmt.Sprintf(", key=%s", n.PosAlias)
 	}
 	return fmt.Sprintf("%s%s%s(col=%s, alias=%s%s)\n%s", prefix, name, outer, n.Col, n.Alias, pos, n.Child.Explain(indent+1))
+}
+
+// lateralViewIter expands one input row into zero-or-more output rows on the
+// fly (EXPLODE / POSEXPLODE / map), never holding more than one input row.
+type lateralViewIter struct {
+	node  *LateralViewExplodeNode
+	child RowIter
+	row   storage.Row
+	out   []storage.Row
+}
+
+func (it *lateralViewIter) Next() (storage.Row, error) {
+	for {
+		if len(it.out) > 0 {
+			row := it.out[0]
+			it.out = it.out[1:]
+			return row, nil
+		}
+		input, err := it.child.Next()
+		if err != nil {
+			return nil, err
+		}
+		out := it.expand(input)
+		if len(out) == 0 {
+			continue
+		}
+		it.out = out
+	}
+}
+
+func (it *lateralViewIter) expand(row storage.Row) []storage.Row {
+	n := it.node
+	val := row[n.Col]
+	var elements []string
+	if val != "" {
+		elements = strings.Split(val, ",")
+	}
+	if len(elements) == 0 {
+		if !n.IsOuter {
+			return nil
+		}
+		newRow := copyRow(row)
+		newRow[n.Alias] = ""
+		if n.WithPos || n.WithMap {
+			newRow[n.PosAlias] = ""
+		}
+		return []storage.Row{newRow}
+	}
+	result := make([]storage.Row, 0, len(elements))
+	switch {
+	case n.WithMap:
+		for i := 0; i+1 < len(elements); i += 2 {
+			newRow := copyRow(row)
+			newRow[n.PosAlias] = strings.TrimSpace(elements[i])
+			newRow[n.Alias] = strings.TrimSpace(elements[i+1])
+			result = append(result, newRow)
+		}
+	case n.WithPos:
+		for idx, elem := range elements {
+			newRow := copyRow(row)
+			newRow[n.Alias] = strings.TrimSpace(elem)
+			newRow[n.PosAlias] = strconv.Itoa(idx)
+			result = append(result, newRow)
+		}
+	default:
+		for _, elem := range elements {
+			newRow := copyRow(row)
+			newRow[n.Alias] = strings.TrimSpace(elem)
+			result = append(result, newRow)
+		}
+	}
+	return result
+}
+
+func (it *lateralViewIter) Close() error {
+	return it.child.Close()
 }
 
 type JoinNode struct {
@@ -588,99 +614,6 @@ func (n *JoinNode) Type() string {
 	return "Join"
 }
 
-func (n *JoinNode) Execute() ([]storage.Row, error) {
-	leftRows, err := n.Left.Execute()
-	if err != nil {
-		return nil, err
-	}
-	rightRows, err := n.Right.Execute()
-	if err != nil {
-		return nil, err
-	}
-
-	leftCol := n.LeftColumn
-	rightCol := n.RightColumn
-
-	normalize := n.NormalizeKey
-	if normalize == nil {
-		normalize = func(s string) string { return s }
-	}
-
-	var result []storage.Row
-
-	if n.JoinType == "CROSS" {
-		for _, lr := range leftRows {
-			for _, rr := range rightRows {
-				merged := make(storage.Row, len(lr)+len(rr))
-				for k, v := range lr {
-					merged[k] = v
-				}
-				for k, v := range rr {
-					merged[k] = v
-				}
-				result = append(result, merged)
-			}
-		}
-		debugPrintRows(n.Type(), result)
-		return result, nil
-	}
-
-	// Build hash on the right side
-	hash := make(map[string][]storage.Row, len(rightRows))
-	for _, row := range rightRows {
-		key := normalize(row[rightCol])
-		hash[key] = append(hash[key], row)
-	}
-
-	// Track which left and right keys were matched
-	matchedKeys := make(map[string]bool)
-
-	for _, lr := range leftRows {
-		key := normalize(lr[leftCol])
-		if matched, ok := hash[key]; ok {
-			matchedKeys[key] = true
-			if n.JoinType == "SEMI" {
-				result = append(result, copyRow(lr))
-				continue
-			}
-			for _, rr := range matched {
-				merged := make(storage.Row, len(lr)+len(rr))
-				for k, v := range lr {
-					merged[k] = v
-				}
-				for k, v := range rr {
-					if _, conflict := merged[k]; conflict && n.RightPrefix != "" {
-						// same-named column on both sides: keep the left value bare
-						// and store the right value qualified so expressions like
-						// "alias.col" can still read it
-						merged[n.RightPrefix+"."+k] = v
-					} else {
-						merged[k] = v
-					}
-				}
-				result = append(result, merged)
-			}
-		} else if n.JoinType == "LEFT" || n.JoinType == "FULL" {
-			result = append(result, copyRow(lr))
-		}
-	}
-
-	// RIGHT JOIN / FULL JOIN: add unmatched right rows with NULL left
-	if n.JoinType == "RIGHT" || n.JoinType == "FULL" {
-		for key, rows := range hash {
-			if matchedKeys[key] {
-				continue
-			}
-			for _, rr := range rows {
-				result = append(result, copyRow(rr))
-			}
-		}
-	}
-
-	debugPrintRows(n.Type(), result)
-	return result, nil
-}
-
 func copyRow(row storage.Row) storage.Row {
 	r := make(storage.Row, len(row))
 	for k, v := range row {
@@ -704,106 +637,6 @@ func cloneRows(rows []storage.Row) []storage.Row {
 		cloned = append(cloned, newRow)
 	}
 	return cloned
-}
-
-func filterRowsParallel(rows []storage.Row, expr parser.Expression) []storage.Row {
-	if len(rows) == 0 || expr == nil {
-		return rows
-	}
-
-	workers := runtime.GOMAXPROCS(0)
-	chunkSize := (len(rows) + workers - 1) / workers
-	type segmentResult struct {
-		index int
-		rows  []storage.Row
-	}
-	resultCh := make(chan segmentResult, workers)
-	for i := 0; i < workers; i++ {
-		start := i * chunkSize
-		if start >= len(rows) {
-			resultCh <- segmentResult{index: i, rows: nil}
-			continue
-		}
-		end := start + chunkSize
-		if end > len(rows) {
-			end = len(rows)
-		}
-		go func(idx int, slice []storage.Row) {
-			defer func() {
-				if r := recover(); r != nil {
-					resultCh <- segmentResult{index: idx, rows: nil}
-				}
-			}()
-			filtered := make([]storage.Row, 0, len(slice))
-			for _, row := range slice {
-				if evaluateExpression(row, expr) {
-					filtered = append(filtered, row)
-				}
-			}
-			resultCh <- segmentResult{index: idx, rows: filtered}
-		}(i, rows[start:end])
-	}
-
-	results := make([][]storage.Row, workers)
-	for i := 0; i < workers; i++ {
-		res := <-resultCh
-		results[res.index] = res.rows
-	}
-	var result []storage.Row
-	for _, segment := range results {
-		if len(segment) > 0 {
-			result = append(result, segment...)
-		}
-	}
-	return result
-}
-
-func projectRowsParallel(rows []storage.Row, columns []string) []storage.Row {
-	if len(rows) == 0 {
-		return rows
-	}
-	workers := runtime.GOMAXPROCS(0)
-	chunkSize := (len(rows) + workers - 1) / workers
-	type segmentResult struct {
-		index int
-		rows  []storage.Row
-	}
-	resultCh := make(chan segmentResult, workers)
-	for i := 0; i < workers; i++ {
-		start := i * chunkSize
-		if start >= len(rows) {
-			resultCh <- segmentResult{index: i, rows: nil}
-			continue
-		}
-		end := start + chunkSize
-		if end > len(rows) {
-			end = len(rows)
-		}
-		go func(idx int, slice []storage.Row) {
-			projected := make([]storage.Row, 0, len(slice))
-			for _, row := range slice {
-				projectedRow := make(storage.Row)
-				for _, col := range columns {
-					projectedRow[col] = row[col]
-				}
-				projected = append(projected, projectedRow)
-			}
-			resultCh <- segmentResult{index: idx, rows: projected}
-		}(i, rows[start:end])
-	}
-
-	results := make([][]storage.Row, workers)
-	for i := 0; i < workers; i++ {
-		res := <-resultCh
-		results[res.index] = res.rows
-	}
-	var result []storage.Row
-	for _, segment := range results {
-		if len(segment) > 0 {
-			result = append(result, segment...)
-		}
-	}
-	return result
 }
 
 func sortRows(rows []storage.Row, orderBy []parser.SortOrder) {

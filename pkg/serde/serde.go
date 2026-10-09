@@ -18,10 +18,10 @@ import (
 type Row map[string]string
 
 type SerdeOptions struct {
-	Delimiter       rune // field separator (default: ',')
-	SkipHeaderLines int  // lines to skip at file start (default: 0)
-	Quote           rune // quote character (default: '"')
-	Escape          rune // escape character (default: '"')
+	Delimiter       rune   // field separator (default: ',')
+	SkipHeaderLines int    // lines to skip at file start (default: 0)
+	Quote           rune   // quote character (default: '"')
+	Escape          rune   // escape character (default: '"')
 	IncludeHeader   bool   // write column names as first row
 	SheetName       string // excel sheet name (default: first sheet on read, "Sheet1" on write)
 }
@@ -55,19 +55,51 @@ func NewSerdeOptions(tbl *catalog.Table) SerdeOptions {
 	return opts
 }
 
+// Decoder is a streaming row decoder. Next returns io.EOF when the input
+// is exhausted. Formats that cannot be streamed (excel) are buffered on
+// creation and replayed from memory.
+type Decoder interface {
+	Next() (Row, error)
+	Close() error
+}
+
+// NewDecoder creates a streaming decoder for the given format.
+func NewDecoder(format string, r io.Reader, columns []catalog.ColumnDef, opts SerdeOptions) (Decoder, error) {
+	switch strings.ToLower(format) {
+	case "csv", "":
+		return newCSVDecoder(r, columns, opts), nil
+	case "json":
+		return newJSONDecoder(r, columns), nil
+	case "excel", "xlsx":
+		rows, err := decodeExcel(r, columns, opts)
+		if err != nil {
+			return nil, err
+		}
+		return &sliceDecoder{rows: rows}, nil
+	default:
+		return nil, fmt.Errorf("unsupported format %q", format)
+	}
+}
+
 func Decode(ctx context.Context, format string, r io.Reader, columns []catalog.ColumnDef, opts SerdeOptions) ([]Row, error) {
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
 	}
-	switch strings.ToLower(format) {
-	case "csv", "":
-		return decodeCSV(r, columns, opts)
-	case "json":
-		return decodeJSON(r, columns)
-	case "excel", "xlsx":
-		return decodeExcel(r, columns, opts)
-	default:
-		return nil, fmt.Errorf("unsupported format %q", format)
+	dec, err := NewDecoder(format, r, columns, opts)
+	if err != nil {
+		return nil, err
+	}
+	defer dec.Close()
+	var rows []Row
+	for {
+		row, err := dec.Next()
+		if err == io.EOF {
+			return rows, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		rows = append(rows, row)
 	}
 }
 
@@ -87,49 +119,67 @@ func Encode(ctx context.Context, format string, rows []Row, columns []catalog.Co
 	}
 }
 
-func decodeCSV(r io.Reader, columns []catalog.ColumnDef, opts SerdeOptions) ([]Row, error) {
+type csvDecoder struct {
+	reader  *csv.Reader
+	columns []catalog.ColumnDef
+	skip    int
+	done    bool
+}
+
+func newCSVDecoder(r io.Reader, columns []catalog.ColumnDef, opts SerdeOptions) *csvDecoder {
 	reader := csv.NewReader(bufio.NewReader(r))
 	reader.Comma = opts.Delimiter
 	reader.LazyQuotes = true
 	reader.TrimLeadingSpace = true
 	reader.FieldsPerRecord = -1
-
-	for i := 0; i < opts.SkipHeaderLines; i++ {
-		if _, err := reader.Read(); err != nil {
-			if err == io.EOF {
-				break
-			}
-			return nil, err
-		}
-	}
-
-	var rows []Row
-	for {
-		record, err := reader.Read()
-		if err != nil {
-			if err == io.EOF {
-				break
-			}
-			return nil, err
-		}
-		row := make(Row)
-		for i, col := range columns {
-			var value string
-			if i < len(record) {
-				value = record[i]
-			}
-			row[col.Name] = value
-		}
-		rows = append(rows, row)
-	}
-	return rows, nil
+	return &csvDecoder{reader: reader, columns: columns, skip: opts.SkipHeaderLines}
 }
 
-func decodeJSON(r io.Reader, columns []catalog.ColumnDef) ([]Row, error) {
-	scanner := bufio.NewScanner(r)
-	var rows []Row
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
+func (d *csvDecoder) Next() (Row, error) {
+	if d.done {
+		return nil, io.EOF
+	}
+	for d.skip > 0 {
+		d.skip--
+		if _, err := d.reader.Read(); err != nil {
+			if err == io.EOF {
+				d.done = true
+				return nil, io.EOF
+			}
+			return nil, err
+		}
+	}
+	record, err := d.reader.Read()
+	if err != nil {
+		if err == io.EOF {
+			d.done = true
+			return nil, io.EOF
+		}
+		return nil, err
+	}
+	row := make(Row)
+	for i, col := range d.columns {
+		if i < len(record) {
+			row[col.Name] = record[i]
+		}
+	}
+	return row, nil
+}
+
+func (d *csvDecoder) Close() error { return nil }
+
+type jsonDecoder struct {
+	scanner *bufio.Scanner
+	columns []catalog.ColumnDef
+}
+
+func newJSONDecoder(r io.Reader, columns []catalog.ColumnDef) *jsonDecoder {
+	return &jsonDecoder{scanner: bufio.NewScanner(r), columns: columns}
+}
+
+func (d *jsonDecoder) Next() (Row, error) {
+	for d.scanner.Scan() {
+		line := strings.TrimSpace(d.scanner.Text())
 		if line == "" {
 			continue
 		}
@@ -138,20 +188,40 @@ func decodeJSON(r io.Reader, columns []catalog.ColumnDef) ([]Row, error) {
 			return nil, err
 		}
 		row := make(Row)
-		for _, col := range columns {
+		for _, col := range d.columns {
 			if value, ok := rowMap[col.Name]; ok {
 				row[col.Name] = fmt.Sprint(value)
 			} else {
 				row[col.Name] = ""
 			}
 		}
-		rows = append(rows, row)
+		return row, nil
 	}
-	if err := scanner.Err(); err != nil {
+	if err := d.scanner.Err(); err != nil {
 		return nil, err
 	}
-	return rows, nil
+	return nil, io.EOF
 }
+
+func (d *jsonDecoder) Close() error { return nil }
+
+// sliceDecoder replays a fully buffered row set; used by formats that
+// cannot be streamed (excel).
+type sliceDecoder struct {
+	rows []Row
+	pos  int
+}
+
+func (d *sliceDecoder) Next() (Row, error) {
+	if d.pos >= len(d.rows) {
+		return nil, io.EOF
+	}
+	row := d.rows[d.pos]
+	d.pos++
+	return row, nil
+}
+
+func (d *sliceDecoder) Close() error { return nil }
 
 func encodeCSV(w io.Writer, rows []Row, columns []catalog.ColumnDef, opts SerdeOptions) error {
 	writer := csv.NewWriter(w)
