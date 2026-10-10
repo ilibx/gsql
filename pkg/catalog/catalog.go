@@ -32,8 +32,12 @@ type Table struct {
 }
 
 type ColumnDef struct {
-    Name string
-    Type string
+	Name string
+	Type string
+	// Default holds the column's DEFAULT value; only meaningful when
+	// HasDefault is true (DEFAULT NULL / DEFAULT '' give an empty value).
+	Default    string
+	HasDefault bool
 }
 
 type Catalog struct {

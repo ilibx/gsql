@@ -161,6 +161,9 @@ func (d *csvDecoder) Next() (Row, error) {
 	for i, col := range d.columns {
 		if i < len(record) {
 			row[col.Name] = record[i]
+		} else if col.HasDefault {
+			// short record: the column was not provided -> DEFAULT
+			row[col.Name] = col.Default
 		}
 	}
 	return row, nil
@@ -191,6 +194,8 @@ func (d *jsonDecoder) Next() (Row, error) {
 		for _, col := range d.columns {
 			if value, ok := rowMap[col.Name]; ok {
 				row[col.Name] = fmt.Sprint(value)
+			} else if col.HasDefault {
+				row[col.Name] = col.Default
 			} else {
 				row[col.Name] = ""
 			}
@@ -292,6 +297,8 @@ func decodeExcel(r io.Reader, columns []catalog.ColumnDef, opts SerdeOptions) ([
 		for i, col := range columns {
 			if i < len(row) {
 				r[col.Name] = row[i]
+			} else if col.HasDefault {
+				r[col.Name] = col.Default
 			} else {
 				r[col.Name] = ""
 			}

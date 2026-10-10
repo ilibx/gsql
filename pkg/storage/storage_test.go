@@ -42,7 +42,6 @@ func TestLocalStorageBasicFileOps(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open failed: %v", err)
 	}
-	defer f.Close()
 
 	read, err := io.ReadAll(f)
 	if err != nil {
@@ -50,6 +49,10 @@ func TestLocalStorageBasicFileOps(t *testing.T) {
 	}
 	if string(read) != string(data) {
 		t.Fatalf("unexpected content: %s", string(read))
+	}
+	// close before rename: Windows forbids renaming a file that is open
+	if err := f.Close(); err != nil {
+		t.Fatalf("Close failed: %v", err)
 	}
 
 	if err := store.Rename(ctx, fileName, "subdir/renamed.txt"); err != nil {
@@ -66,7 +69,7 @@ func TestLocalStorageBasicFileOps(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Glob failed: %v", err)
 	}
-	if len(matches) != 1 || matches[0] != filepath.ToSlash("subdir/renamed.txt") {
+	if len(matches) != 1 || filepath.ToSlash(matches[0]) != filepath.ToSlash("subdir/renamed.txt") {
 		t.Fatalf("unexpected glob result: %v", matches)
 	}
 
@@ -82,7 +85,6 @@ func TestLocalStorageBasicFileOps(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open renamed file failed: %v", err)
 	}
-	defer file.Close()
 
 	if err := file.Touch(ctx); err != nil {
 		t.Fatalf("Touch failed: %v", err)
@@ -119,6 +121,10 @@ func TestLocalStorageBasicFileOps(t *testing.T) {
 		t.Fatalf("CopyTo failed: %v", err)
 	}
 	copyDst.Close()
+	// close before Remove: Windows forbids removing a file that is open
+	if err := file.Close(); err != nil {
+		t.Fatalf("Close renamed file failed: %v", err)
+	}
 
 	if !store.Exists(ctx, "subdir/copy.txt") {
 		t.Fatalf("copy target should exist")

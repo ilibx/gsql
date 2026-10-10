@@ -661,7 +661,19 @@ func (p *Parser) parseColumnDefinitions() ([]ColumnDef, error) {
 			return nil, fmt.Errorf("expected column type after %s", name)
 		}
 		colType := p.cur.Literal
-		columns = append(columns, ColumnDef{Name: name, Type: colType})
+		col := ColumnDef{Name: name, Type: colType}
+		// optional column constraint: DEFAULT <literal>
+		if p.peekIs(IDENT) && strings.EqualFold(p.peek.Literal, "default") {
+			p.nextToken() // cur = DEFAULT
+			p.nextToken() // cur = first token of the literal
+			def, err := p.parseDefaultLiteral(name)
+			if err != nil {
+				return nil, err
+			}
+			col.Default = def
+			col.HasDefault = true
+		}
+		columns = append(columns, col)
 		if p.peekIs(COMMA) {
 			p.nextToken()
 			p.nextToken()
@@ -670,6 +682,29 @@ func (p *Parser) parseColumnDefinitions() ([]ColumnDef, error) {
 		break
 	}
 	return columns, nil
+}
+
+// parseDefaultLiteral parses the value following the DEFAULT keyword in a
+// column definition. The cursor must be on the first token of the literal.
+// Supported literals: strings, numbers (optionally signed), NULL and bare
+// words such as true/false. A NULL or empty-string default yields an empty
+// value; HasDefault is set by the caller.
+func (p *Parser) parseDefaultLiteral(colName string) (string, error) {
+	switch p.cur.Type {
+	case NULL_KEYWORD:
+		return "", nil
+	case STRING, NUMBER, IDENT:
+		return p.cur.Literal, nil
+	case MINUS, PLUS:
+		sign := p.cur.Literal
+		p.nextToken()
+		if p.cur.Type != NUMBER {
+			return "", fmt.Errorf("expected number after %q in DEFAULT for column %s, got %s", sign, colName, tokenName(p.cur.Type))
+		}
+		return sign + p.cur.Literal, nil
+	default:
+		return "", fmt.Errorf("expected value after DEFAULT for column %s, got %s", colName, tokenName(p.cur.Type))
+	}
 }
 
 func (p *Parser) parseWithOptions() (map[string]string, error) {

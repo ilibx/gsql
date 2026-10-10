@@ -600,6 +600,14 @@ type JoinNode struct {
 	// value is stored under "RightPrefix.column" so both sides stay readable.
 	RightPrefix  string
 	NormalizeKey func(string) string // optional: normalizes join key values for type-aware comparison
+
+	// LeftDefaults/RightDefaults hold the type-based default value for every
+	// column of the corresponding side. Rows emitted for an unmatched side are
+	// filled with these so expressions referencing the missing side read the
+	// column default instead of falling back to a same-named value from the
+	// other side. May be nil (fill is a no-op).
+	LeftDefaults  storage.Row
+	RightDefaults storage.Row
 }
 
 func NewJoinNode(left, right PlanNode, leftCol, rightCol string) *JoinNode {
@@ -1132,6 +1140,8 @@ func LogicalToPhysical(node LogicalNode, ctx *PhysicalPlanContext) (PlanNode, er
 		jn := NewJoinNodeWithType(left, right, n.LeftColumn, n.RightColumn, n.JoinType)
 		jn.NormalizeKey = n.NormalizeKey
 		jn.RightPrefix = n.RightPrefix
+		jn.LeftDefaults = sideDefaults(n.Left, ctx)
+		jn.RightDefaults = sideDefaults(n.Right, ctx)
 		return jn, nil
 	case *LogicalAggregate:
 		child, err := LogicalToPhysical(n.Child, ctx)

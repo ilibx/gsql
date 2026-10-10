@@ -35,6 +35,71 @@ WITH (
 	}
 }
 
+func TestParseColumnDefault(t *testing.T) {
+	sql := `CREATE TABLE metrics (
+  id INT DEFAULT 0,
+  name STRING DEFAULT 'unknown',
+  amount INT DEFAULT -1,
+  ratio FLOAT DEFAULT 1.5,
+  active BOOLEAN DEFAULT true,
+  note STRING DEFAULT NULL,
+  plain STRING
+)
+WITH (
+  storage = 'local',
+  format = 'csv',
+  path = '/data/metrics'
+);`
+
+	stmts, err := NewParser().Parse(sql)
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+	createStmt, ok := stmts[0].(*CreateTableStmt)
+	if !ok {
+		t.Fatalf("expected CreateTableStmt, got %T", stmts[0])
+	}
+	want := []struct {
+		name string
+		typ  string
+		def  string
+		has  bool
+	}{
+		{"id", "INT", "0", true},
+		{"name", "STRING", "unknown", true},
+		{"amount", "INT", "-1", true},
+		{"ratio", "FLOAT", "1.5", true},
+		{"active", "BOOLEAN", "true", true},
+		{"note", "STRING", "", true}, // DEFAULT NULL
+		{"plain", "STRING", "", false},
+	}
+	if len(createStmt.Columns) != len(want) {
+		t.Fatalf("expected %d columns, got %d", len(want), len(createStmt.Columns))
+	}
+	for i, w := range want {
+		got := createStmt.Columns[i]
+		if got.Name != w.name || got.Type != w.typ {
+			t.Errorf("column %d: got %s %s, want %s %s", i, got.Name, got.Type, w.name, w.typ)
+		}
+		if got.HasDefault != w.has || got.Default != w.def {
+			t.Errorf("column %s: default=(%q, has=%v), want (%q, has=%v)",
+				w.name, got.Default, got.HasDefault, w.def, w.has)
+		}
+	}
+}
+
+func TestParseColumnDefaultErrors(t *testing.T) {
+	cases := []string{
+		`CREATE TABLE t (a INT DEFAULT) WITH (storage = 'local');`,
+		`CREATE TABLE t (a INT DEFAULT -x) WITH (storage = 'local');`,
+	}
+	for _, sql := range cases {
+		if _, err := NewParser().Parse(sql); err == nil {
+			t.Errorf("expected parse error for: %s", sql)
+		}
+	}
+}
+
 func TestParseCreateExternalTable(t *testing.T) {
 	sql := `CREATE EXTERNAL TABLE users (
   id INT,

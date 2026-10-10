@@ -47,7 +47,10 @@ func (e *Engine) Execute(stmt parser.Statement) error {
 func (e *Engine) executeCreateTable(stmt *parser.CreateTableStmt) error {
 	columns := make([]catalog.ColumnDef, 0, len(stmt.Columns))
 	for _, col := range stmt.Columns {
-		columns = append(columns, catalog.ColumnDef{Name: col.Name, Type: col.Type})
+		columns = append(columns, catalog.ColumnDef{
+			Name: col.Name, Type: col.Type,
+			Default: col.Default, HasDefault: col.HasDefault,
+		})
 	}
 	table := &catalog.Table{
 		Name:        stmt.Name,
@@ -86,23 +89,68 @@ func (e *Engine) executeInsertOverwrite(stmt *parser.InsertOverwriteStmt) error 
 		}
 		targetCols = append(targetCols, target.PartitionBy...)
 
-		aliases := make(map[string]string)
+		// column defs by name: target columns not produced by the SELECT
+		// are filled with their DEFAULT value
+		colByName := make(map[string]catalog.ColumnDef, len(target.Columns))
+		for _, c := range target.Columns {
+			colByName[c.Name] = c
+		}
+
+		// Map each SELECT column to the row key that actually holds its value.
+		// ColumnAliases is alias -> original expression; after the alias remap
+		// in executeSelectWithCTEs the row carries the alias where one was
+		// given, the exact (possibly qualified) name where the qualified name
+		// survived de-qualification, and the bare name otherwise. Keying the
+		// alias map by the stripped name (old behavior) collides when two
+		// SELECT columns share a bare suffix (e.g. s.input vs p.input).
+		exactToAlias := make(map[string]string)
 		for alias, orig := range stmt.Query.ColumnAliases {
-			aliases[stripTableAlias(orig)] = alias
+			exactToAlias[orig] = alias
 		}
 
 		for ri, row := range rows {
 			nr := make(storage.Row)
 			for i, origCol := range stmt.Query.Columns {
-				stripped := stripTableAlias(origCol)
-				if resolved, ok := aliases[stripped]; ok {
-					stripped = resolved
+				key := ""
+				if alias, ok := exactToAlias[origCol]; ok {
+					if _, exists := row[alias]; exists {
+						key = alias
+					}
+				}
+				if key == "" {
+					if _, exists := row[origCol]; exists {
+						key = origCol
+					}
+				}
+				if key == "" {
+					key = stripTableAlias(origCol)
 				}
 				if i < len(targetCols) {
-					nr[targetCols[i]] = row[stripped]
+					if v, ok := row[key]; ok {
+						nr[targetCols[i]] = v
+					} else if def, ok := colByName[targetCols[i]]; ok && def.HasDefault {
+						nr[targetCols[i]] = def.Default
+					} else {
+						nr[targetCols[i]] = ""
+					}
+				}
+			}
+			// target columns not produced by the SELECT get their DEFAULT
+			for i := len(stmt.Query.Columns); i < len(targetCols); i++ {
+				if def, ok := colByName[targetCols[i]]; ok && def.HasDefault {
+					nr[targetCols[i]] = def.Default
 				}
 			}
 			rows[ri] = nr
+		}
+	} else {
+		// SELECT *: fill target columns missing from the source rows
+		for _, row := range rows {
+			for _, c := range target.Columns {
+				if _, ok := row[c.Name]; !ok && c.HasDefault {
+					row[c.Name] = c.Default
+				}
+			}
 		}
 	}
 
@@ -940,20 +988,34 @@ func (e *Engine) executeInsertValues(stmt *parser.InsertOverwriteStmt) error {
 		return fmt.Errorf("target table %s does not exist", stmt.TableName)
 	}
 
-	// 检查 VALUES 列数是否与目标表列数匹配
+	// 检查 VALUES 列数：允许少于目标表列数（缺失列用 DEFAULT 填充），
+	// 不允许多于目标表列数
 	if len(stmt.Values) == 0 {
 		return fmt.Errorf("no values provided for INSERT")
 	}
-	if len(stmt.Values[0]) != len(target.Columns) {
-		return fmt.Errorf("column count mismatch: VALUES has %d columns, table %s has %d columns", len(stmt.Values[0]), stmt.TableName, len(target.Columns))
+	for _, rowValues := range stmt.Values {
+		if len(rowValues) > len(target.Columns) {
+			return fmt.Errorf("column count mismatch: VALUES has %d columns, table %s has %d columns", len(rowValues), stmt.TableName, len(target.Columns))
+		}
+		if len(rowValues) < len(target.Columns) {
+			for i := len(rowValues); i < len(target.Columns); i++ {
+				if !target.Columns[i].HasDefault {
+					return fmt.Errorf("column count mismatch: VALUES has %d columns, table %s has %d columns (column %s has no DEFAULT)", len(rowValues), stmt.TableName, len(target.Columns), target.Columns[i].Name)
+				}
+			}
+		}
 	}
 
-	// 将 VALUES 转换为 Row 格式
+	// 将 VALUES 转换为 Row 格式；缺失的尾部列填充 DEFAULT 值
 	rows := make([]storage.Row, 0, len(stmt.Values))
 	for _, rowValues := range stmt.Values {
 		row := make(storage.Row)
 		for i, colDef := range target.Columns {
-			row[colDef.Name] = rowValues[i]
+			if i < len(rowValues) {
+				row[colDef.Name] = rowValues[i]
+			} else {
+				row[colDef.Name] = colDef.Default
+			}
 		}
 		rows = append(rows, row)
 	}

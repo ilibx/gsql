@@ -181,6 +181,28 @@ WITH (
 );
 ```
 
+### 列默认值（DEFAULT）
+
+列定义支持可选的 `DEFAULT` 子句，字面量可以是字符串、数字（可带正负号）、`NULL` 或裸词（如 `true`）：
+
+```sql
+CREATE TABLE metrics (
+  id      INT DEFAULT 0,
+  name    STRING DEFAULT 'unknown',
+  amount  INT DEFAULT -1,
+  active  BOOLEAN DEFAULT true,
+  note    STRING DEFAULT NULL
+)
+WITH (storage = 'local', format = 'csv', path = '/data/metrics');
+```
+
+默认值在以下场景生效：
+
+- **读取数据**：CSV/JSON/Excel 行缺少该列时填入默认值（已存在但为空的单元格视为显式空值，不替换）
+- **INSERT ... VALUES**：VALUES 行的列数少于表列数时，缺失列用默认值填充；缺失列没有 `DEFAULT` 或列数超出表列数，均报列数不匹配
+- **INSERT ... SELECT**：SELECT 产出的列少于目标表列数时，未覆盖的目标列写入默认值
+- **外连接填充**：LEFT/RIGHT/FULL/SEMI 未匹配行的缺失侧优先使用列 `DEFAULT`，未声明时按类型回退（数值→`0`，布尔→`false`，其他→空）
+
 ### WITH 选项值
 
 选项值支持三种定界符：

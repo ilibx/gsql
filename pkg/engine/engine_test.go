@@ -657,8 +657,8 @@ func TestEngineLeftJoin(t *testing.T) {
 		if found["bob"] != "200" {
 			t.Errorf("expected bob=200, got %q", found["bob"])
 		}
-		if found["carol"] != "" {
-			t.Errorf("expected carol='' (unmatched), got %q", found["carol"])
+		if found["carol"] != "0" {
+			t.Errorf("expected carol='0' (unmatched, right amount INT default), got %q", found["carol"])
 		}
 	})
 
@@ -688,8 +688,8 @@ func TestEngineLeftJoin(t *testing.T) {
 		if found["bob"] != "200" {
 			t.Errorf("expected bob=200, got %q", found["bob"])
 		}
-		if found["carol"] != "" {
-			t.Errorf("expected carol='' (unmatched), got %q", found["carol"])
+		if found["carol"] != "0" {
+			t.Errorf("expected carol='0' (unmatched, right amount INT default), got %q", found["carol"])
 		}
 	})
 }
@@ -850,8 +850,8 @@ func TestEngineFullJoin(t *testing.T) {
 		if found["bob"] != "200" {
 			t.Errorf("expected bob=200, got %q", found["bob"])
 		}
-		if found["carol"] != "" {
-			t.Errorf("expected carol='' (unmatched left), got %q", found["carol"])
+		if found["carol"] != "0" {
+			t.Errorf("expected carol='0' (unmatched left, right amount INT default), got %q", found["carol"])
 		}
 		if found[""] != "400" {
 			t.Errorf("expected unmatched right row with amount=400, got %q", found[""])
@@ -883,8 +883,8 @@ func TestEngineFullJoin(t *testing.T) {
 		if found["bob"] != "200" {
 			t.Errorf("expected bob=200, got %q", found["bob"])
 		}
-		if found["carol"] != "" {
-			t.Errorf("expected carol='' (unmatched left), got %q", found["carol"])
+		if found["carol"] != "0" {
+			t.Errorf("expected carol='0' (unmatched left, right amount INT default), got %q", found["carol"])
 		}
 		if found[""] != "400" {
 			t.Errorf("expected unmatched right row with amount=400, got %q", found[""])
@@ -1066,8 +1066,8 @@ func TestEngineJoinStringKey(t *testing.T) {
 		if found["bob"] != "200" {
 			t.Errorf("expected bob=200, got %q", found["bob"])
 		}
-		if found["carol"] != "" {
-			t.Errorf("expected carol='' (unmatched), got %q", found["carol"])
+		if found["carol"] != "0" {
+			t.Errorf("expected carol='0' (unmatched, right amount INT default), got %q", found["carol"])
 		}
 	})
 

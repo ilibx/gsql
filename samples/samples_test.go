@@ -84,14 +84,14 @@ func TestCaseDiffLeftJoin(t *testing.T) {
 		t.Fatalf("select failed: %v", err)
 	}
 
-	// 两张表 5 vs 4 行；r2/r3 数值有差异，r5 只在左侧。
-	// diff 应为：r1=0, r2=1, r3=1, r4=0, r5=0
+	// 两张表 5 vs 4 行；r2/r3 数值有差异，r5 只在左侧（右侧字段填类型默认值）。
+	// diff 应为：r1=0, r2=1, r3=1, r4=0, r5=1
 	expected := map[string]string{
 		"r1": "0",
 		"r2": "1",
 		"r3": "1",
 		"r4": "0",
-		"r5": "0",
+		"r5": "1",
 	}
 	got := make(map[string]string, len(rows))
 	for _, row := range rows {

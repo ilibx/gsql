@@ -245,7 +245,9 @@ func (it *joinIter) joinBatch(batch []storage.Row) ([]storage.Row, error) {
 		if matched, ok := it.hash[key]; ok {
 			it.recordMatched(key)
 			if n.JoinType == "SEMI" {
-				out = append(out, copyRow(lr))
+				row := copyRow(lr)
+				fillDefaults(row, n.RightDefaults, n.RightPrefix)
+				out = append(out, row)
 				continue
 			}
 			for _, rr := range matched {
@@ -266,10 +268,34 @@ func (it *joinIter) joinBatch(batch []storage.Row) ([]storage.Row, error) {
 				out = append(out, merged)
 			}
 		} else if n.JoinType == "LEFT" || n.JoinType == "FULL" {
-			out = append(out, copyRow(lr))
+			row := copyRow(lr)
+			fillDefaults(row, n.RightDefaults, n.RightPrefix)
+			out = append(out, row)
 		}
 	}
 	return out, nil
+}
+
+// fillDefaults adds type-based default values for columns of the side that
+// had no matching row. The key layout mirrors joinBatch's matched merge:
+// bare unless the key already exists in dst, in which case the default is
+// stored qualified with prefix. Existing (real) values are never
+// overwritten by a default.
+func fillDefaults(dst storage.Row, defaults storage.Row, prefix string) {
+	if len(defaults) == 0 {
+		return
+	}
+	for k, v := range defaults {
+		if _, conflict := dst[k]; conflict {
+			if prefix != "" {
+				if _, exists := dst[prefix+"."+k]; !exists {
+					dst[prefix+"."+k] = v
+				}
+			}
+			continue
+		}
+		dst[k] = v
+	}
 }
 
 func (it *joinIter) recordMatched(key string) {
@@ -349,7 +375,23 @@ func (it *joinIter) materializeTail() {
 		if it.matched[key] {
 			continue
 		}
-		it.tail = append(it.tail, copyRow(rr))
+		// seed from the left side's column defaults so unmatched right rows
+		// carry every left column, then merge the right row with the same
+		// conflict rule as a matched merge (left bare, colliding right
+		// values qualified). With nil LeftDefaults this degrades to
+		// copyRow(rr), preserving the old behavior.
+		row := make(storage.Row, len(n.LeftDefaults)+len(rr))
+		for k, v := range n.LeftDefaults {
+			row[k] = v
+		}
+		for k, v := range rr {
+			if _, conflict := row[k]; conflict && n.RightPrefix != "" {
+				row[n.RightPrefix+"."+k] = v
+			} else {
+				row[k] = v
+			}
+		}
+		it.tail = append(it.tail, row)
 	}
 }
 

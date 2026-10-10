@@ -7,6 +7,11 @@ type Statement interface {
 type ColumnDef struct {
 	Name string
 	Type string
+	// Default holds the column's DEFAULT value (as written in SQL). When the
+	// DEFAULT clause is present, HasDefault is true even if the value itself
+	// is empty (DEFAULT NULL or DEFAULT '').
+	Default    string
+	HasDefault bool
 }
 
 type CreateTableStmt struct {
