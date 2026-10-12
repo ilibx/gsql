@@ -289,6 +289,12 @@ WITH (
 
 当 `chat_id` 配置后，写入文件和新创建的目录会自动授予群聊 `full_access`（完全管理）权限。
 
+### 大文件写入
+
+飞书 `upload_all` 接口单次上限 20MB，超过会返回 `error code 2200: Internal Error`。gsql 自动切换：小于等于 20MB 走 `upload_all`，更大的文件改用分片上传（`upload_prepare` / `upload_part` / `upload_finish`，4MB 分片）。上传请求带重试（网络错误、5xx、可重试业务码最多重试 3 次，指数退避）。
+
+> 注意：Lark 存储是全内存缓冲写入，输出文件会同时驻留在内存中，超大结果集建议改用 `PARTITION BY` 分区写出。
+
 ### 获取文件夹 token
 
 在飞书云文档中打开目标文件夹，浏览器地址栏 URL 中的 `{token}` 部分即为文件夹 token。

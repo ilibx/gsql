@@ -28,6 +28,9 @@ const (
 	larkAuthAPI    = "/open-apis/auth/v3/tenant_access_token/internal"
 	larkDriveAPI   = "/open-apis/drive/v1/files"
 	larkUploadAPI  = "/open-apis/drive/v1/files/upload_all"
+	larkUploadPrepareAPI = "/open-apis/drive/v1/files/upload_prepare"
+	larkUploadPartAPI    = "/open-apis/drive/v1/files/upload_part"
+	larkUploadFinishAPI  = "/open-apis/drive/v1/files/upload_finish"
 	larkCreateFolderAPI = "/open-apis/drive/v1/files/create_folder"
 	larkDownloadAPI = "/open-apis/drive/v1/files/%s/download"
 	larkDeleteAPI  = "/open-apis/drive/v1/files/%s"
@@ -41,6 +44,21 @@ const (
 
 	larkAuthTTL     = 90 * time.Minute
 	larkHTTPTimeout = 30 * time.Second
+	// Uploads carry whole payloads, so they get a much larger budget than metadata calls.
+	larkUploadTimeout = 10 * time.Minute
+
+	// larkMaxUploadAllSize is the hard limit of drive/v1/files/upload_all
+	// (the size field is capped at 20971520 bytes). Anything larger has to go
+	// through the chunked upload API.
+	larkMaxUploadAllSize = 20 * 1024 * 1024
+	// Lark chunks with 4MB blocks; used when the platform does not report a strategy.
+	larkDefaultBlockSize = 4 * 1024 * 1024
+
+	larkUploadAttempts    = 3
+	larkUploadRetryDelay  = 500 * time.Millisecond
+	larkCodeInternalError = 1061001
+	larkCodeCanRetry      = 1061045
+	larkCodePlatformError = 2200
 )
 
 type larkStorage struct {
@@ -56,6 +74,7 @@ type larkStorage struct {
 	rootOnce  sync.Once
 	rootErr   error
 	httpCli   *http.Client
+	uploadCli *http.Client
 
 	writeBufs   map[string][]byte
 	writeBufsMu sync.Mutex
@@ -101,13 +120,14 @@ func newLarkStorage(tbl *catalog.Table) (Storage, error) {
 	}
 
 	return &larkStorage{
-		appID:      appID,
-		appSecret:  appSecret,
-		folder:     folder,
-		rootToken:  rootToken,
-		chatID:     chatID,
-		httpCli:    &http.Client{Timeout: larkHTTPTimeout},
-		writeBufs:  make(map[string][]byte),
+		appID:     appID,
+		appSecret: appSecret,
+		folder:    folder,
+		rootToken: rootToken,
+		chatID:    chatID,
+		httpCli:   &http.Client{Timeout: larkHTTPTimeout},
+		uploadCli: &http.Client{Timeout: larkUploadTimeout},
+		writeBufs: make(map[string][]byte),
 	}, nil
 }
 
@@ -433,6 +453,103 @@ type larkUploadResp struct {
 	Data struct {
 		FileToken string `json:"file_token"`
 	} `json:"data"`
+}
+
+type larkUploadPrepareResp struct {
+	Code int    `json:"code"`
+	Msg  string `json:"msg"`
+	Data struct {
+		UploadID  string `json:"upload_id"`
+		BlockSize int    `json:"block_size"`
+		BlockNum  int    `json:"block_num"`
+	} `json:"data"`
+}
+
+// larkAPIError reports a non-zero business code returned by a Lark API.
+type larkAPIError struct {
+	API  string
+	Code int
+	Msg  string
+}
+
+func (e *larkAPIError) Error() string {
+	return fmt.Sprintf("%s error code %d: %s", e.API, e.Code, e.Msg)
+}
+
+// isRetryableLarkCode reports whether a business code is a transient platform
+// failure worth another attempt.
+func isRetryableLarkCode(code int) bool {
+	switch code {
+	case larkCodeInternalError, larkCodeCanRetry, larkCodePlatformError:
+		return true
+	}
+	return false
+}
+
+func sleepCtx(ctx context.Context, d time.Duration) error {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+// doUploadPost POSTs to a Lark upload endpoint, retrying transient failures
+// (transport errors, 5xx responses and retryable business codes). body is a
+// factory so every attempt gets a fresh reader.
+func (s *larkStorage) doUploadPost(ctx context.Context, api, apiURL, contentType string, body func() io.Reader) ([]byte, error) {
+	var lastErr error
+	for attempt := 0; attempt < larkUploadAttempts; attempt++ {
+		if attempt > 0 {
+			if err := sleepCtx(ctx, larkUploadRetryDelay*time.Duration(1<<(attempt-1))); err != nil {
+				return nil, err
+			}
+		}
+		token, err := s.getToken(ctx)
+		if err != nil {
+			return nil, err
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL, body())
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
+		if contentType != "" {
+			req.Header.Set("Content-Type", contentType)
+		}
+		resp, err := s.uploadCli.Do(req)
+		if err != nil {
+			lastErr = fmt.Errorf("%s request failed: %w", api, err)
+			continue
+		}
+		data, rerr := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if rerr != nil {
+			lastErr = fmt.Errorf("%s read response failed: %w", api, rerr)
+			continue
+		}
+		var env struct {
+			Code int    `json:"code"`
+			Msg  string `json:"msg"`
+		}
+		if json.Unmarshal(data, &env) == nil && env.Code != 0 {
+			apiErr := &larkAPIError{API: api, Code: env.Code, Msg: env.Msg}
+			if resp.StatusCode < 500 && !isRetryableLarkCode(env.Code) {
+				return nil, apiErr
+			}
+			lastErr = apiErr
+			continue
+		}
+		if resp.StatusCode >= 500 {
+			lastErr = fmt.Errorf("%s http status %d: %s", api, resp.StatusCode, strings.TrimSpace(string(data)))
+			continue
+		}
+		return data, nil
+	}
+	return nil, fmt.Errorf("%s failed after %d attempts: %w", api, larkUploadAttempts, lastErr)
 }
 
 type larkExportCreateResp struct {
@@ -1053,6 +1170,31 @@ func (s *larkStorage) WriteFile(ctx context.Context, name string, data []byte, p
 		}
 	}
 
+	fileToken, err := s.upload(ctx, parentToken, fileName, data)
+	if err != nil {
+		return err
+	}
+
+	if s.chatID != "" {
+		if serr := s.shareFile(ctx, fileToken, s.chatID); serr != nil {
+			fmt.Fprintf(os.Stderr, "WARNING: share file to chat failed: %v\n", serr)
+		}
+	}
+
+	return nil
+}
+
+// upload stores data in Lark Drive and returns the resulting file token.
+// upload_all caps a single request at 20MB, so larger payloads go through the
+// chunked upload API instead.
+func (s *larkStorage) upload(ctx context.Context, parentToken, fileName string, data []byte) (string, error) {
+	if len(data) <= larkMaxUploadAllSize {
+		return s.uploadAll(ctx, parentToken, fileName, data)
+	}
+	return s.uploadChunks(ctx, parentToken, fileName, data)
+}
+
+func (s *larkStorage) uploadAll(ctx context.Context, parentToken, fileName string, data []byte) (string, error) {
 	var buf bytes.Buffer
 	w := multipart.NewWriter(&buf)
 	w.WriteField("file_name", fileName)
@@ -1061,32 +1203,118 @@ func (s *larkStorage) WriteFile(ctx context.Context, name string, data []byte, p
 	w.WriteField("size", strconv.Itoa(len(data)))
 	fw, err := w.CreateFormFile("file", fileName)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if _, err := fw.Write(data); err != nil {
-		return err
+		return "", err
 	}
 	w.Close()
 
-	respData, err := s.doPost(ctx, larkBaseURL+larkUploadAPI, w.FormDataContentType(), &buf)
+	respData, err := s.doUploadPost(ctx, "lark upload", larkBaseURL+larkUploadAPI, w.FormDataContentType(), func() io.Reader {
+		return bytes.NewReader(buf.Bytes())
+	})
 	if err != nil {
-		return err
+		return "", err
 	}
 	var resp larkUploadResp
 	if err := json.Unmarshal(respData, &resp); err != nil {
-		return fmt.Errorf("lark upload decode failed: %w", err)
+		return "", fmt.Errorf("lark upload decode failed: %w", err)
 	}
-	if resp.Code != 0 {
-		return fmt.Errorf("lark upload error code %d: %s", resp.Code, resp.Msg)
-	}
+	return resp.Data.FileToken, nil
+}
 
-	if s.chatID != "" {
-		if serr := s.shareFile(ctx, resp.Data.FileToken, s.chatID); serr != nil {
-			fmt.Fprintf(os.Stderr, "WARNING: share file to chat failed: %v\n", serr)
+// uploadChunks uploads data through upload_prepare / upload_part / upload_finish.
+func (s *larkStorage) uploadChunks(ctx context.Context, parentToken, fileName string, data []byte) (string, error) {
+	uploadID, blockSize, err := s.uploadPrepare(ctx, parentToken, fileName, len(data))
+	if err != nil {
+		return "", err
+	}
+	blockNum := chunkCount(len(data), blockSize)
+	for seq := 0; seq < blockNum; seq++ {
+		if ctx.Err() != nil {
+			return "", ctx.Err()
+		}
+		chunk := data[seq*blockSize:min((seq+1)*blockSize, len(data))]
+		var buf bytes.Buffer
+		w := multipart.NewWriter(&buf)
+		w.WriteField("upload_id", uploadID)
+		w.WriteField("seq", strconv.Itoa(seq))
+		w.WriteField("size", strconv.Itoa(len(chunk)))
+		fw, err := w.CreateFormFile("file", fileName)
+		if err != nil {
+			return "", err
+		}
+		if _, err := fw.Write(chunk); err != nil {
+			return "", err
+		}
+		w.Close()
+
+		_, err = s.doUploadPost(ctx, "lark upload part", larkBaseURL+larkUploadPartAPI, w.FormDataContentType(), func() io.Reader {
+			return bytes.NewReader(buf.Bytes())
+		})
+		if err != nil {
+			return "", fmt.Errorf("lark upload part %d/%d: %w", seq+1, blockNum, err)
 		}
 	}
 
-	return nil
+	body, _ := json.Marshal(map[string]interface{}{
+		"upload_id": uploadID,
+		"block_num": blockNum,
+	})
+	respData, err := s.doUploadPost(ctx, "lark upload finish", larkBaseURL+larkUploadFinishAPI, "application/json", func() io.Reader {
+		return bytes.NewReader(body)
+	})
+	if err != nil {
+		return "", err
+	}
+	var resp larkUploadResp
+	if err := json.Unmarshal(respData, &resp); err != nil {
+		return "", fmt.Errorf("lark upload finish decode failed: %w", err)
+	}
+	if resp.Data.FileToken == "" {
+		// Fall back to a folder lookup if the platform omitted the token.
+		token, _, _, err := s.resolveChildToken(ctx, parentToken, fileName)
+		if err != nil {
+			return "", fmt.Errorf("lark upload finish returned no file_token: %w", err)
+		}
+		return token, nil
+	}
+	return resp.Data.FileToken, nil
+}
+
+func (s *larkStorage) uploadPrepare(ctx context.Context, parentToken, fileName string, size int) (uploadID string, blockSize int, err error) {
+	body, _ := json.Marshal(map[string]interface{}{
+		"file_name":   fileName,
+		"parent_type": "explorer",
+		"parent_node": parentToken,
+		"size":        size,
+	})
+	respData, err := s.doUploadPost(ctx, "lark upload prepare", larkBaseURL+larkUploadPrepareAPI, "application/json", func() io.Reader {
+		return bytes.NewReader(body)
+	})
+	if err != nil {
+		return "", 0, err
+	}
+	var resp larkUploadPrepareResp
+	if err := json.Unmarshal(respData, &resp); err != nil {
+		return "", 0, fmt.Errorf("lark upload prepare decode failed: %w", err)
+	}
+	if resp.Data.UploadID == "" {
+		return "", 0, fmt.Errorf("lark upload prepare returned no upload_id")
+	}
+	blockSize = resp.Data.BlockSize
+	if blockSize <= 0 {
+		blockSize = larkDefaultBlockSize
+	}
+	return resp.Data.UploadID, blockSize, nil
+}
+
+// chunkCount returns the number of fixed-size blocks needed for size bytes.
+func chunkCount(size, blockSize int) int {
+	if size <= 0 || blockSize <= 0 {
+		return 1
+	}
+	return (size + blockSize - 1) / blockSize
 }
 
 func (s *larkStorage) Rename(ctx context.Context, oldName, newName string) error {

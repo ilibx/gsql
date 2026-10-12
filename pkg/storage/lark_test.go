@@ -219,3 +219,47 @@ func TestLarkStorageFolderNameMissingRoot(t *testing.T) {
 		t.Error("expected error when neither path nor root_token is set, got nil")
 	}
 }
+
+func TestLarkChunkCount(t *testing.T) {
+	block := larkDefaultBlockSize
+	tests := []struct {
+		size int
+		want int
+	}{
+		{size: 0, want: 1},
+		{size: 1, want: 1},
+		{size: block, want: 1},
+		{size: block + 1, want: 2},
+		{size: 3 * block, want: 3},
+		{size: 3*block + 7, want: 4},
+		{size: 5 * block, want: 5},
+	}
+	for _, tt := range tests {
+		if got := chunkCount(tt.size, block); got != tt.want {
+			t.Errorf("chunkCount(%d, %d) = %d, want %d", tt.size, block, got, tt.want)
+		}
+	}
+}
+
+func TestLarkRetryableCodes(t *testing.T) {
+	retryable := []int{larkCodeInternalError, larkCodeCanRetry, larkCodePlatformError}
+	for _, code := range retryable {
+		if !isRetryableLarkCode(code) {
+			t.Errorf("expected code %d to be retryable", code)
+		}
+	}
+	permanent := []int{1061002, 1061043, 1062009, 1061073}
+	for _, code := range permanent {
+		if isRetryableLarkCode(code) {
+			t.Errorf("expected code %d to be non-retryable", code)
+		}
+	}
+}
+
+func TestLarkAPIErrorMessage(t *testing.T) {
+	err := &larkAPIError{API: "lark upload", Code: 2200, Msg: "Internal Error"}
+	want := "lark upload error code 2200: Internal Error"
+	if err.Error() != want {
+		t.Errorf("got %q, want %q", err.Error(), want)
+	}
+}
