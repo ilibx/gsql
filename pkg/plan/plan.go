@@ -1206,42 +1206,60 @@ func expressionToString(expr parser.Expression) string {
 	}
 }
 
+// computeWindowFunctions evaluates every window expression independently:
+// rows are grouped by that expression's own PARTITION BY columns and ordered
+// by its own ORDER BY, so several windows with different window definitions
+// in one SELECT each see the correct partition and ordering. Results are
+// written to the expression's ResultKey, keeping multiple windows — and
+// multiple calls of the same window function — from overwriting each other.
+// The input row order is preserved in the output.
 func computeWindowFunctions(rows []storage.Row, windowExprs []parser.WindowExpr) []storage.Row {
-	// Sort rows into partitions
-	partitions := partitionRows(rows, windowExprs)
-	// Compute window functions per partition
-	result := make([]storage.Row, 0, len(rows))
-	for _, part := range partitions {
-		computed := computePartitionWindow(part, windowExprs)
-		result = append(result, computed...)
+	if len(rows) == 0 {
+		return rows
 	}
-	return result
-}
-
-func partitionRows(rows []storage.Row, windowExprs []parser.WindowExpr) [][]storage.Row {
-	// Collect all PARTITION BY columns from all window expressions
-	partCols := make(map[string]bool)
 	for _, w := range windowExprs {
-		for _, p := range w.PartitionBy {
-			partCols[p] = true
+		if w.FuncName == "" {
+			continue
+		}
+		colKey := w.ResultKey
+		if colKey == "" {
+			argStr := ""
+			if len(w.Args) > 0 {
+				argStr = w.Args[0]
+			}
+			colKey = w.FuncName + "(" + argStr + ")"
+		}
+		for _, part := range partitionRows(rows, w.PartitionBy) {
+			if len(w.OrderBy) > 0 {
+				sortRows(part, w.OrderBy)
+			}
+			computePartitionWindow(part, w, colKey)
 		}
 	}
-	if len(partCols) == 0 {
-		// No PARTITION BY — whole result is one partition
+	return rows
+}
+
+// partitionRows groups row references by the given PARTITION BY columns.
+// Groups appear in first-appearance order and rows keep their relative input
+// order; rows are maps, so grouping and sorting never reorders the input
+// slice itself.
+func partitionRows(rows []storage.Row, partBy []string) [][]storage.Row {
+	if len(partBy) == 0 {
+		// No PARTITION BY — the whole input is one partition
 		return [][]storage.Row{rows}
 	}
-	partColList := sortedMapKeys(partCols)
-	// Group rows by partition key values
-	groups := make(map[string][]storage.Row)
+	groups := make([][]storage.Row, 0, 8)
+	index := make(map[string]int, 8)
 	for _, row := range rows {
-		key := makePartitionKey(row, partColList)
-		groups[key] = append(groups[key], row)
+		key := makePartitionKey(row, partBy)
+		if i, ok := index[key]; ok {
+			groups[i] = append(groups[i], row)
+			continue
+		}
+		index[key] = len(groups)
+		groups = append(groups, []storage.Row{row})
 	}
-	result := make([][]storage.Row, 0, len(groups))
-	for _, g := range groups {
-		result = append(result, g)
-	}
-	return result
+	return groups
 }
 
 func makePartitionKey(row storage.Row, cols []string) string {
@@ -1261,47 +1279,29 @@ func sortedMapKeys(m map[string]bool) []string {
 	return keys
 }
 
-func computePartitionWindow(rows []storage.Row, windowExprs []parser.WindowExpr) []storage.Row {
+// computePartitionWindow computes one window expression over one partition.
+// The partition must already be ordered by the window's ORDER BY.
+func computePartitionWindow(rows []storage.Row, w parser.WindowExpr, colKey string) {
 	if len(rows) == 0 {
-		return rows
+		return
 	}
-	// Sort within partition by each window expression's ORDER BY
-	for _, w := range windowExprs {
-		if len(w.OrderBy) > 0 {
-			sortRows(rows, w.OrderBy)
-			break // use first window's ORDER BY for interleaving
-		}
-	}
-
-	// Compute each window function and add result columns to rows
-	for _, w := range windowExprs {
-		if w.FuncName == "" {
-			continue
-		}
-		argStr := ""
-		if len(w.Args) > 0 {
-			argStr = w.Args[0]
-		}
-		colKey := w.FuncName + "(" + argStr + ")"
-		switch w.FuncName {
-		case "COUNT":
-			computeWindowAggFrame(rows, colKey, w.Args, "COUNT", w.Frame, w.OrderBy)
-		case "SUM":
-			computeWindowAggFrame(rows, colKey, w.Args, "SUM", w.Frame, w.OrderBy)
-		case "AVG":
-			computeWindowAggFrame(rows, colKey, w.Args, "AVG", w.Frame, w.OrderBy)
-		case "MIN":
-			computeWindowAggFrame(rows, colKey, w.Args, "MIN", w.Frame, w.OrderBy)
-		case "MAX":
-			computeWindowAggFrame(rows, colKey, w.Args, "MAX", w.Frame, w.OrderBy)
-		default:
-			// Lookup registered window functions (LEAD, LAG, NTILE, etc.)
-			if fn, ok := LookupFunc(w.FuncName); ok && fn.WindowFn != nil {
-				rows = fn.WindowFn(rows, w.Args, w.OrderBy, colKey)
-			}
+	switch w.FuncName {
+	case "COUNT":
+		computeWindowAggFrame(rows, colKey, w.Args, "COUNT", w.Frame, w.OrderBy)
+	case "SUM":
+		computeWindowAggFrame(rows, colKey, w.Args, "SUM", w.Frame, w.OrderBy)
+	case "AVG":
+		computeWindowAggFrame(rows, colKey, w.Args, "AVG", w.Frame, w.OrderBy)
+	case "MIN":
+		computeWindowAggFrame(rows, colKey, w.Args, "MIN", w.Frame, w.OrderBy)
+	case "MAX":
+		computeWindowAggFrame(rows, colKey, w.Args, "MAX", w.Frame, w.OrderBy)
+	default:
+		// Lookup registered window functions (LEAD, LAG, NTILE, etc.)
+		if fn, ok := LookupFunc(w.FuncName); ok && fn.WindowFn != nil {
+			fn.WindowFn(rows, w.Args, w.OrderBy, colKey)
 		}
 	}
-	return rows
 }
 
 func computeRank(rows []storage.Row, colKey string, orderBy []parser.SortOrder, dense bool) {

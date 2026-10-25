@@ -106,6 +106,7 @@ const (
 	FULL_KW
 	SEMI_KW
 	CROSS_KW
+	WINDOW_KW
 )
 
 var keywords = map[string]TokenType{
@@ -162,6 +163,7 @@ var keywords = map[string]TokenType{
 	"semi":      SEMI_KW,
 	"cross":     CROSS_KW,
 	"outer":     OUTER_KW,
+	"window":    WINDOW_KW,
 }
 
 func NewParser() *Parser {
@@ -382,6 +384,8 @@ func (t TokenType) String() string {
 		return "SEMI"
 	case CROSS_KW:
 		return "CROSS"
+	case WINDOW_KW:
+		return "WINDOW"
 	case PIPEPIPE:
 		return "||"
 	default:
@@ -1088,6 +1092,87 @@ func (p *Parser) parseSelectQuery() (*SelectQuery, error) {
 			return nil, err
 		}
 	}
+	// WINDOW clause: named window definitions referenced by OVER (name)
+	namedWindows := make(map[string]WindowExpr)
+	if p.cur.Type == WINDOW_KW {
+		p.nextToken()
+		for {
+			if p.cur.Type != IDENT {
+				return nil, fmt.Errorf("expected window name in WINDOW clause, got %s", tokenName(p.cur.Type))
+			}
+			winName := strings.ToLower(p.cur.Literal)
+			if _, dup := namedWindows[winName]; dup {
+				return nil, fmt.Errorf("window %s is defined more than once", p.cur.Literal)
+			}
+			p.nextToken()
+			if !p.curIs(AS) {
+				return nil, fmt.Errorf("expected AS after window name %s", winName)
+			}
+			p.nextToken()
+			if !p.curIs(LPAREN) {
+				return nil, fmt.Errorf("expected ( after AS for window %s", winName)
+			}
+			p.nextToken()
+			spec := &WindowExpr{}
+			// A definition may extend a previously defined window: w2 AS (w1 ...)
+			if p.curIs(IDENT) {
+				spec.WindowRef = p.cur.Literal
+				p.nextToken()
+			}
+			if err := p.parseWindowFeatures(spec); err != nil {
+				return nil, err
+			}
+			if !p.curIs(RPAREN) {
+				return nil, fmt.Errorf("expected ) after definition of window %s, got %s", winName, tokenName(p.cur.Type))
+			}
+			p.nextToken()
+			if spec.WindowRef != "" {
+				base, ok := namedWindows[strings.ToLower(spec.WindowRef)]
+				if !ok {
+					return nil, fmt.Errorf("window %q does not exist", spec.WindowRef)
+				}
+				resolved := base
+				if len(spec.PartitionBy) > 0 {
+					resolved.PartitionBy = spec.PartitionBy
+				}
+				if len(spec.OrderBy) > 0 {
+					resolved.OrderBy = spec.OrderBy
+				}
+				if spec.Frame != nil {
+					resolved.Frame = spec.Frame
+				}
+				spec = &resolved
+			}
+			namedWindows[winName] = *spec
+			if p.curIs(COMMA) {
+				p.nextToken()
+				continue
+			}
+			break
+		}
+	}
+	// Resolve OVER (name) references against this query's named windows.
+	for i := range windowExprs {
+		w := &windowExprs[i]
+		if w.WindowRef == "" {
+			continue
+		}
+		base, ok := namedWindows[strings.ToLower(w.WindowRef)]
+		if !ok {
+			return nil, fmt.Errorf("window %q does not exist", w.WindowRef)
+		}
+		explicitPart, explicitOrder, explicitFrame := w.PartitionBy, w.OrderBy, w.Frame
+		w.PartitionBy, w.OrderBy, w.Frame = base.PartitionBy, base.OrderBy, base.Frame
+		if len(explicitPart) > 0 {
+			w.PartitionBy = explicitPart
+		}
+		if len(explicitOrder) > 0 {
+			w.OrderBy = explicitOrder
+		}
+		if explicitFrame != nil {
+			w.Frame = explicitFrame
+		}
+	}
 	if p.cur.Type == ORDER {
 		if err := p.expectPeek(BY); err != nil {
 			return nil, err
@@ -1683,13 +1768,17 @@ func (p *Parser) parseSelectItems() ([]string, []Expression, []AggregateExpr, []
 				if err != nil {
 					return nil, nil, nil, nil, nil, err
 				}
+				// Each window function gets its own result key so that several
+				// windows in one SELECT (e.g. two ROW_NUMBER()) never overwrite
+				// each other's value.
+				windowExpr.ResultKey = uniqueWindowKey(columns, colKey)
 				windowExprs = append(windowExprs, *windowExpr)
-				columns = append(columns, colKey)
+				columns = append(columns, windowExpr.ResultKey)
 				columnExprs = append(columnExprs, nil)
 				if p.curIs(AS) {
 					p.nextToken()
 					if p.curIs(IDENT) {
-						colAliases[p.cur.Literal] = colKey
+						colAliases[p.cur.Literal] = windowExpr.ResultKey
 					}
 				}
 			} else {
@@ -1764,6 +1853,30 @@ func (p *Parser) parseSelectItems() ([]string, []Expression, []AggregateExpr, []
 		break
 	}
 	return columns, columnExprs, aggregates, windowExprs, colAliases, nil
+}
+
+// uniqueWindowKey returns base when no earlier SELECT column uses it, and
+// base#2, base#3, ... otherwise, so repeated window functions (two
+// ROW_NUMBER(), two RANK(), ...) each get a distinct result key.
+func uniqueWindowKey(columns []string, base string) string {
+	if !containsColumn(columns, base) {
+		return base
+	}
+	for n := 2; ; n++ {
+		candidate := fmt.Sprintf("%s#%d", base, n)
+		if !containsColumn(columns, candidate) {
+			return candidate
+		}
+	}
+}
+
+func containsColumn(columns []string, name string) bool {
+	for _, c := range columns {
+		if c == name {
+			return true
+		}
+	}
+	return false
 }
 
 func (p *Parser) parseFuncArgs() ([]string, error) {
@@ -1879,61 +1992,75 @@ func (p *Parser) parseCastExpr() (*FuncCallExpr, error) {
 }
 
 func (p *Parser) parseWindowSpec(funcName string, args []string) (*WindowExpr, error) {
+	we := &WindowExpr{FuncName: funcName, Args: args}
+
+	// Bare named-window reference: OVER w1
+	if p.curIs(IDENT) {
+		we.WindowRef = p.cur.Literal
+		p.nextToken()
+		return we, nil
+	}
 	if p.cur.Type != LPAREN {
 		return nil, fmt.Errorf("expected ( after OVER")
 	}
 	p.nextToken()
 
-	var partitionBy []string
-	var orderBy []SortOrder
+	// Named window reference: OVER (w1 ...). The name is resolved once the
+	// WINDOW clause of this query has been parsed.
+	if p.curIs(IDENT) {
+		we.WindowRef = p.cur.Literal
+		p.nextToken()
+	}
+	if err := p.parseWindowFeatures(we); err != nil {
+		return nil, err
+	}
+	if p.cur.Type != RPAREN {
+		return nil, fmt.Errorf("expected ) after window specification, got %s", tokenName(p.cur.Type))
+	}
+	p.nextToken()
 
+	return we, nil
+}
+
+// parseWindowFeatures parses the optional PARTITION BY / ORDER BY / frame
+// parts of a window specification. p.cur must already point past them (the
+// caller consumes the closing paren).
+func (p *Parser) parseWindowFeatures(we *WindowExpr) error {
 	if p.cur.Type == PARTITION {
 		if err := p.expectPeek(BY); err != nil {
-			return nil, err
+			return err
 		}
 		p.nextToken()
-		var err error
-		partitionBy, err = p.parseDottedList()
+		partitionBy, err := p.parseDottedList()
 		if err != nil {
-			return nil, err
+			return err
 		}
+		we.PartitionBy = partitionBy
 	}
 
 	if p.cur.Type == ORDER {
 		if err := p.expectPeek(BY); err != nil {
-			return nil, err
+			return err
 		}
 		p.nextToken()
-		var err error
-		orderBy, err = p.parseOrderByList()
+		orderBy, err := p.parseOrderByList()
 		if err != nil {
-			return nil, err
+			return err
 		}
+		we.OrderBy = orderBy
 	}
 
-	// Parse window frame clause: [ROWS | RANGE] BETWEEN ... AND ...
-	var frame *WindowFrame
+	// Window frame clause: [ROWS | RANGE] BETWEEN ... AND ...
 	if p.cur.Type == ROWS_KW || p.cur.Type == RANGE_KW {
 		frameType := FrameRows
 		if p.cur.Type == RANGE_KW {
 			frameType = FrameRange
 		}
 		p.nextToken()
-		frame, _ = p.parseWindowFrame(frameType)
+		frame, _ := p.parseWindowFrame(frameType)
+		we.Frame = frame
 	}
-
-	if p.cur.Type != RPAREN {
-		return nil, fmt.Errorf("expected ) after window specification, got %s", tokenName(p.cur.Type))
-	}
-	p.nextToken()
-
-	return &WindowExpr{
-		FuncName:    funcName,
-		Args:        args,
-		PartitionBy: partitionBy,
-		OrderBy:     orderBy,
-		Frame:       frame,
-	}, nil
+	return nil
 }
 
 func (p *Parser) parseWindowFrame(frameType WindowFrameType) (*WindowFrame, error) {

@@ -200,11 +200,13 @@ type WindowFrame struct {
 }
 
 type WindowExpr struct {
-	FuncName    string        // ROW_NUMBER, RANK, DENSE_RANK, SUM, AVG, MIN, MAX, COUNT
-	Args        []string      // function arguments (e.g., ["col"] for SUM(col))
-	PartitionBy []string      // PARTITION BY columns
-	OrderBy     []SortOrder   // ORDER BY within window
-	Frame       *WindowFrame  // nil means default frame (RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW with ORDER BY)
+	FuncName    string       // ROW_NUMBER, RANK, DENSE_RANK, SUM, AVG, MIN, MAX, COUNT
+	Args        []string     // function arguments (e.g., ["col"] for SUM(col))
+	PartitionBy []string     // PARTITION BY columns
+	OrderBy     []SortOrder  // ORDER BY within window
+	Frame       *WindowFrame // nil means default frame (RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW with ORDER BY)
+	WindowRef   string       // named window referenced via OVER (name); resolved when the WINDOW clause is parsed
+	ResultKey   string       // unique row key holding the computed value (deduplicated per SELECT list)
 }
 
 func (e *WindowExpr) expressionNode() {}

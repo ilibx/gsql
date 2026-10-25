@@ -193,6 +193,14 @@
 - [x] 支持帧边界：`UNBOUNDED PRECEDING`、`n PRECEDING`、`CURRENT ROW`、`n FOLLOWING`、`UNBOUNDED FOLLOWING`
 - [x] RANGE 帧基于 ORDER BY 值等值分组（当前支持数值类型 PRECEDING/FOLLOWING 阈值）
 
+### P2.1：多窗口与命名窗口
+- [x] 每个 `OVER(...)` 独立按自己的 `PARTITION BY` 分区、`ORDER BY` 排序（修复多窗口互相干扰）
+- [x] 同名窗口函数（两个 `ROW_NUMBER()`）分配独立结果列 key（`base`、`base#2`），不再互相覆盖
+- [x] `WINDOW w1 AS (...), w2 AS (...)` 命名窗口子句（位于 `HAVING` 之后、`ORDER BY` 之前）
+- [x] `OVER (w1)` / `OVER w1` 引用命名窗口，未定义时报错 `window "w1" does not exist`
+- [x] 命名窗口链式扩展：`w2 AS (w1 ORDER BY ...)`，窗口名不可重复定义
+- [x] 窗口函数列与 `GROUP BY` 聚合共存（窗口结果无需出现在 GROUP BY 中）
+
 ### P3：表生成函数 + LATERAL VIEW
 - [x] `EXPLODE(arr)` — 数组展开为多行（逗号分隔字符串）
 - [x] `EXPLODE(map)` — Map 展开为多行 (k, v)（k/v 成对读取）

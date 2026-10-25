@@ -116,6 +116,40 @@ SELECT name, age,
 FROM users;
 ```
 
+### 多窗口
+
+同一条 SQL 可以使用多个 `OVER(...)` 窗口，每个窗口**独立**计算各自的
+`PARTITION BY` 分区与 `ORDER BY` 排序，互不影响；聚合函数（`SUM` / `AVG` /
+`COUNT` / `MIN` / `MAX`）同样可以带窗口子句。同名函数写多次（两个
+`ROW_NUMBER()`）会得到互相独立的输出列，建议用别名区分：
+
+```sql
+SELECT name, city, age,
+  ROW_NUMBER() OVER (PARTITION BY city ORDER BY age DESC) AS rn_city, -- 分区内排名
+  RANK()      OVER (ORDER BY age)                     AS rk_all,   -- 全局排名
+  SUM(age)    OVER (PARTITION BY city)                AS city_total -- 分区聚合
+FROM users;
+```
+
+### 命名窗口（WINDOW 子句）
+
+可以用 `WINDOW` 子句定义可复用的窗口，再通过 `OVER (窗口名)` 引用
+（`OVER 窗口名` 不带括号也接受）。定义可引用之前定义过的窗口来扩展：
+
+```sql
+SELECT name, city, age,
+  ROW_NUMBER() OVER (w1) AS rn,
+  SUM(age)     OVER (w2) AS city_total
+FROM users
+WINDOW w1 AS (PARTITION BY city ORDER BY age DESC),
+       w2 AS (PARTITION BY city);
+-- 链式扩展：w3 继承 w1 的分区，再补自己的排序
+-- WINDOW w1 AS (PARTITION BY city), w3 AS (w1 ORDER BY age DESC);
+```
+
+引用未定义的窗口会报错：`window "w1" does not exist`；`WINDOW` 子句位于
+`HAVING` 之后、`ORDER BY` 之前，窗口名在同一查询内不能重复定义。
+
 ---
 
 ## 数学函数

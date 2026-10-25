@@ -33,9 +33,9 @@ make test
 
 ## 核心特性
 
-- **SQL 语法**：`SELECT` / `WHERE` / `JOIN` / `GROUP BY` / `HAVING` / `ORDER BY` / `LIMIT` / `DISTINCT` / `UNION ALL` / `CTE (WITH)` / 子查询 / `VALUES` / `||` 拼接
+- **SQL 语法**：`SELECT` / `WHERE` / `JOIN` / `GROUP BY` / `HAVING` / `ORDER BY` / `LIMIT` / `DISTINCT` / `UNION ALL` / `CTE (WITH)` / 子查询 / `VALUES` / `||` 拼接 / `WINDOW` 命名窗口
 - **表达式**：算术运算、比较、`IN` / `NOT IN`、`LIKE`、`IS NULL`、`CASE WHEN`
-- **函数**：100+ Hive 兼容内置函数（聚合、窗口、数学、字符串、日期、条件、正则、JSON、哈希、脱敏等），支持嵌套函数调用
+- **函数**：100+ Hive 兼容内置函数（聚合、窗口、数学、字符串、日期、条件、正则、JSON、哈希、脱敏等），支持嵌套函数调用；多窗口各自独立分区/排序，支持 `WINDOW` 子句复用窗口定义
 - **INSERT**：`INSERT OVERWRITE` 覆盖写入、`INSERT INTO` 追加
 - **分区表**：`PARTITIONED BY` 定义，自动分区裁剪（等值+范围），支持 `col=value` 和裸值两种目录格式
 - **文件格式**：CSV（支持自定义分隔符、引号、表头等）、JSON（每行一个对象）、Excel (.xlsx)

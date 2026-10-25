@@ -1,6 +1,7 @@
 package parser
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -1215,5 +1216,124 @@ func TestParseNotEqualOperator(t *testing.T) {
 			continue
 		}
 		_ = stmts
+	}
+}
+
+func TestParseNamedWindowClause(t *testing.T) {
+	sql := `SELECT name, ROW_NUMBER() OVER (w1) AS rn, SUM(age) OVER w2 AS total
+FROM users
+WINDOW w1 AS (PARTITION BY city ORDER BY age DESC), w2 AS (PARTITION BY city);`
+
+	stmts, err := NewParser().Parse(sql)
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+	selectStmt, ok := stmts[0].(*SelectStmt)
+	if !ok {
+		t.Fatalf("expected SelectStmt, got %T", stmts[0])
+	}
+	if len(selectStmt.Query.WindowExprs) != 2 {
+		t.Fatalf("expected 2 window exprs, got %d", len(selectStmt.Query.WindowExprs))
+	}
+	w1 := selectStmt.Query.WindowExprs[0]
+	if w1.WindowRef != "w1" {
+		t.Errorf("expected WindowRef w1, got %q", w1.WindowRef)
+	}
+	if len(w1.PartitionBy) != 1 || w1.PartitionBy[0] != "city" {
+		t.Errorf("expected w1 resolved to PARTITION BY city, got %v", w1.PartitionBy)
+	}
+	if len(w1.OrderBy) != 1 || w1.OrderBy[0].Column != "age" || !w1.OrderBy[0].Desc {
+		t.Errorf("expected w1 resolved to ORDER BY age DESC, got %v", w1.OrderBy)
+	}
+	w2 := selectStmt.Query.WindowExprs[1]
+	if w2.WindowRef != "w2" {
+		t.Errorf("expected WindowRef w2, got %q", w2.WindowRef)
+	}
+	if len(w2.PartitionBy) != 1 || w2.PartitionBy[0] != "city" {
+		t.Errorf("expected w2 resolved to PARTITION BY city, got %v", w2.PartitionBy)
+	}
+	if len(w2.OrderBy) != 0 {
+		t.Errorf("expected w2 to have no ORDER BY, got %v", w2.OrderBy)
+	}
+	if w1.ResultKey != "ROW_NUMBER()" || w2.ResultKey != "SUM(age)" {
+		t.Errorf("unexpected result keys: %q, %q", w1.ResultKey, w2.ResultKey)
+	}
+	if selectStmt.Query.ColumnAliases["rn"] != "ROW_NUMBER()" {
+		t.Errorf("expected alias rn -> ROW_NUMBER(), got %v", selectStmt.Query.ColumnAliases)
+	}
+	if selectStmt.Query.ColumnAliases["total"] != "SUM(age)" {
+		t.Errorf("expected alias total -> SUM(age), got %v", selectStmt.Query.ColumnAliases)
+	}
+}
+
+func TestParseNamedWindowChained(t *testing.T) {
+	sql := `SELECT name, ROW_NUMBER() OVER (w2) AS rn FROM users
+WINDOW w1 AS (PARTITION BY city), w2 AS (w1 ORDER BY age DESC);`
+
+	stmts, err := NewParser().Parse(sql)
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+	selectStmt := stmts[0].(*SelectStmt)
+	w := selectStmt.Query.WindowExprs[0]
+	if len(w.PartitionBy) != 1 || w.PartitionBy[0] != "city" {
+		t.Errorf("expected inherited PARTITION BY city, got %v", w.PartitionBy)
+	}
+	if len(w.OrderBy) != 1 || w.OrderBy[0].Column != "age" || !w.OrderBy[0].Desc {
+		t.Errorf("expected own ORDER BY age DESC, got %v", w.OrderBy)
+	}
+}
+
+func TestParseWindowUnknownReference(t *testing.T) {
+	for _, sql := range []string{
+		`SELECT ROW_NUMBER() OVER (w9) AS rn FROM users;`,
+		`SELECT ROW_NUMBER() OVER w9 AS rn FROM users;`,
+		`SELECT ROW_NUMBER() OVER (w2) AS rn FROM users WINDOW w1 AS (PARTITION BY city);`,
+	} {
+		_, err := NewParser().Parse(sql)
+		if err == nil {
+			t.Errorf("%s: expected unknown window error", sql)
+			continue
+		}
+		if !strings.Contains(err.Error(), "does not exist") {
+			t.Errorf("%s: unexpected error: %v", sql, err)
+		}
+	}
+}
+
+func TestParseDuplicateWindowFunctionsGetUniqueKeys(t *testing.T) {
+	sql := `SELECT ROW_NUMBER() OVER (ORDER BY age) AS a,
+       ROW_NUMBER() OVER (ORDER BY name) AS b,
+       RANK() OVER (ORDER BY age) AS c
+FROM users;`
+
+	stmts, err := NewParser().Parse(sql)
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+	selectStmt := stmts[0].(*SelectStmt)
+	wantCols := []string{"ROW_NUMBER()", "ROW_NUMBER()#2", "RANK()"}
+	if len(selectStmt.Query.Columns) != len(wantCols) {
+		t.Fatalf("expected %d columns, got %v", len(wantCols), selectStmt.Query.Columns)
+	}
+	for i, want := range wantCols {
+		if selectStmt.Query.Columns[i] != want {
+			t.Errorf("column %d = %q, want %q", i, selectStmt.Query.Columns[i], want)
+		}
+		if got := selectStmt.Query.WindowExprs[i].ResultKey; got != want {
+			t.Errorf("window %d ResultKey = %q, want %q", i, got, want)
+		}
+	}
+	aliases := selectStmt.Query.ColumnAliases
+	if aliases["a"] != "ROW_NUMBER()" || aliases["b"] != "ROW_NUMBER()#2" || aliases["c"] != "RANK()" {
+		t.Errorf("unexpected aliases: %v", aliases)
+	}
+}
+
+func TestParseWindowDefinedTwice(t *testing.T) {
+	sql := `SELECT ROW_NUMBER() OVER (w1) AS rn FROM users
+WINDOW w1 AS (PARTITION BY city), w1 AS (ORDER BY age);`
+	if _, err := NewParser().Parse(sql); err == nil {
+		t.Fatal("expected duplicate window definition error")
 	}
 }

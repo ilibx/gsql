@@ -9,6 +9,7 @@ import (
 
 	"github.com/ilibx/gsql/pkg/catalog"
 	"github.com/ilibx/gsql/pkg/parser"
+	"github.com/ilibx/gsql/pkg/storage"
 )
 
 func TestEngineCreateTable(t *testing.T) {
@@ -2356,5 +2357,128 @@ func TestEngineConcatOperator(t *testing.T) {
 		if !found {
 			t.Errorf("unexpected email: %s", email)
 		}
+	}
+}
+
+// execWindowSQL parses and executes a SELECT, returning its rows.
+func execWindowSQL(t *testing.T, eng *Engine, query string) []storage.Row {
+	t.Helper()
+	stmts, err := parser.NewParser().Parse(query)
+	if err != nil {
+		t.Fatalf("parse query failed: %v", err)
+	}
+	selectStmt, ok := stmts[0].(*parser.SelectStmt)
+	if !ok {
+		t.Fatalf("expected SelectStmt, got %T", stmts[0])
+	}
+	rows, err := eng.executeSelect(selectStmt.Query)
+	if err != nil {
+		t.Fatalf("execute query failed: %v", err)
+	}
+	return rows
+}
+
+// TestEngineMultiWindowIndependent verifies that windows with different
+// PARTITION BY / ORDER BY in one SELECT are computed independently.
+func TestEngineMultiWindowIndependent(t *testing.T) {
+	eng := NewEngine(catalog.NewCatalog())
+	rows := execWindowSQL(t, eng, `SELECT name, city, age,
+  ROW_NUMBER() OVER (PARTITION BY city ORDER BY age DESC) AS rn_city,
+  RANK() OVER (ORDER BY age) AS rk_all
+FROM (VALUES ('alice','A',10), ('bob','B',20), ('carol','A',30), ('dave','B',40)) AS t(name, city, age)
+ORDER BY rk_all`)
+	if len(rows) != 4 {
+		t.Fatalf("expected 4 rows, got %d", len(rows))
+	}
+	want := []struct{ name, rkAll, rnCity string }{
+		{"alice", "1", "2"},
+		{"bob", "2", "2"},
+		{"carol", "3", "1"},
+		{"dave", "4", "1"},
+	}
+	for i, w := range want {
+		row := rows[i]
+		if row["name"] != w.name || row["rk_all"] != w.rkAll || row["rn_city"] != w.rnCity {
+			t.Errorf("row %d = %v, want name=%s rk_all=%s rn_city=%s", i, row, w.name, w.rkAll, w.rnCity)
+		}
+	}
+}
+
+// TestEngineDuplicateWindowColumns verifies that two calls of the same window
+// function with different ORDER BY produce two distinct output columns.
+func TestEngineDuplicateWindowColumns(t *testing.T) {
+	eng := NewEngine(catalog.NewCatalog())
+	rows := execWindowSQL(t, eng, `SELECT name, city, age,
+  ROW_NUMBER() OVER (PARTITION BY city ORDER BY name) AS rn_by_name,
+  ROW_NUMBER() OVER (PARTITION BY city ORDER BY age DESC) AS rn_by_age
+FROM (VALUES ('alice','A',10), ('bob','B',20), ('carol','A',30), ('dave','B',40)) AS t(name, city, age)`)
+	if len(rows) != 4 {
+		t.Fatalf("expected 4 rows, got %d", len(rows))
+	}
+	byName := make(map[string]string)
+	byAge := make(map[string]string)
+	for _, row := range rows {
+		if _, ok := row["rn_by_name"]; !ok {
+			t.Fatalf("missing column rn_by_name in row %v", row)
+		}
+		if _, ok := row["rn_by_age"]; !ok {
+			t.Fatalf("missing column rn_by_age in row %v", row)
+		}
+		byName[row["name"]] = row["rn_by_name"]
+		byAge[row["name"]] = row["rn_by_age"]
+	}
+	if byName["alice"] != "1" || byName["carol"] != "2" {
+		t.Errorf("rn_by_name wrong: %v", byName)
+	}
+	if byAge["carol"] != "1" || byAge["alice"] != "2" {
+		t.Errorf("rn_by_age wrong: %v", byAge)
+	}
+}
+
+// TestEngineNamedWindowClause verifies the WINDOW clause and OVER (name).
+func TestEngineNamedWindowClause(t *testing.T) {
+	eng := NewEngine(catalog.NewCatalog())
+	rows := execWindowSQL(t, eng, `SELECT name, city, age,
+  ROW_NUMBER() OVER (w1) AS rn,
+  SUM(age) OVER (w2) AS city_total
+FROM (VALUES ('alice','A',10), ('bob','B',20), ('carol','A',30), ('dave','B',40)) AS t(name, city, age)
+WINDOW w1 AS (PARTITION BY city ORDER BY age DESC), w2 AS (PARTITION BY city)
+ORDER BY name`)
+	if len(rows) != 4 {
+		t.Fatalf("expected 4 rows, got %d", len(rows))
+	}
+	byName := make(map[string][2]string) // rn, city_total
+	for _, row := range rows {
+		byName[row["name"]] = [2]string{row["rn"], row["city_total"]}
+	}
+	want := map[string][2]string{
+		"alice": {"2", "40"},
+		"bob":   {"2", "60"},
+		"carol": {"1", "40"},
+		"dave":  {"1", "60"},
+	}
+	for name, w := range want {
+		if got := byName[name]; got != w {
+			t.Errorf("%s = %v, want %v", name, got, w)
+		}
+	}
+}
+
+// TestEngineWindowAfterGroupBy verifies window functions over grouped rows.
+func TestEngineWindowAfterGroupBy(t *testing.T) {
+	eng := NewEngine(catalog.NewCatalog())
+	rows := execWindowSQL(t, eng, `SELECT city, COUNT(id) AS cnt,
+  ROW_NUMBER() OVER (ORDER BY cnt DESC) AS rk
+FROM (VALUES ('A',1), ('B',2), ('A',3)) AS t(city, id)
+GROUP BY city
+ORDER BY rk`)
+	if len(rows) != 2 {
+		t.Fatalf("expected 2 rows, got %d", len(rows))
+	}
+	if rows[0]["city"] != "A" || rows[0]["cnt"] != "2" || rows[0]["rk"] != "1" {
+		t.Errorf("row 0 = %v", rows[0])
+	}
+	if rows[1]["city"] != "B" || rows[1]["cnt"] != "1" || rows[1]["rk"] != "2" {
+		t.Errorf("row 1 = %v", rows[1])
 	}
 }

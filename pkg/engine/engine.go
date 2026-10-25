@@ -106,6 +106,9 @@ func (e *Engine) executeInsertOverwrite(stmt *parser.InsertOverwriteStmt) error 
 		exactToAlias := make(map[string]string)
 		for alias, orig := range stmt.Query.ColumnAliases {
 			exactToAlias[orig] = alias
+			if nk := normalizeFuncColumnKey(orig); nk != orig {
+				exactToAlias[nk] = alias
+			}
 		}
 
 		for ri, row := range rows {
@@ -323,6 +326,11 @@ func (e *Engine) executeSelectWithCTEs(query *parser.SelectQuery, cteTables map[
 		bareToAlias := make(map[string]string)  // bare orig -> alias (only for unqualified orig)
 		for alias, orig := range query.ColumnAliases {
 			exactToAlias[orig] = alias
+			// function keys are normalized (table qualifier stripped from the
+			// first argument), so map that form too
+			if nk := normalizeFuncColumnKey(orig); nk != orig {
+				exactToAlias[nk] = alias
+			}
 			if !strings.Contains(orig, ".") {
 				bareToAlias[orig] = alias
 			}
@@ -350,6 +358,9 @@ func (e *Engine) executeSelectWithCTEs(query *parser.SelectQuery, cteTables map[
 			type rename struct{ from, to string }
 			var renames []rename
 			for k := range row {
+				if strings.ContainsRune(k, '(') {
+					continue // function keys (e.g. "SUM(o.amount)") are not column refs
+				}
 				idx := strings.IndexByte(k, '.')
 				if idx < 0 || idx == len(k)-1 {
 					continue
@@ -528,6 +539,15 @@ func (e *Engine) validateGroupByColumns(sel *parser.SelectQuery) error {
 	for _, agg := range sel.Aggregates {
 		valid[agg.FuncName+"("+stripTableAlias(agg.Column)+")"] = true
 	}
+	// Window function results never need to be grouped: they are computed
+	// after the aggregation, over the grouped rows.
+	for _, w := range sel.WindowExprs {
+		if w.FuncName == "" {
+			continue
+		}
+		valid[windowResultKey(w)] = true
+		valid[stripTableAlias(windowResultKey(w))] = true
+	}
 	for _, col := range sel.Columns {
 		stripped := stripTableAlias(col)
 		if !valid[stripped] {
@@ -561,6 +581,7 @@ func (e *Engine) addWindowFunctions(root plan.LogicalNode, sel *parser.SelectQue
 			PartitionBy: partBy,
 			OrderBy:     ob,
 			Frame:       w.Frame,
+			ResultKey:   windowResultKey(w),
 		}
 		windowExprs = append(windowExprs, we)
 	}
@@ -570,12 +591,34 @@ func (e *Engine) addWindowFunctions(root plan.LogicalNode, sel *parser.SelectQue
 	return root
 }
 
+// windowResultKey returns the row key a window expression writes its value
+// to. The parser assigns a unique key per SELECT column (deduplicated as
+// base, base#2, ...); programmatically built queries fall back to FUNC(arg).
+func windowResultKey(w parser.WindowExpr) string {
+	if w.ResultKey != "" {
+		return w.ResultKey
+	}
+	argStr := ""
+	if len(w.Args) > 0 {
+		argStr = stripTableAlias(w.Args[0])
+	}
+	return w.FuncName + "(" + argStr + ")"
+}
+
 func (e *Engine) addSortAndLimit(root plan.LogicalNode, sel *parser.SelectQuery) plan.LogicalNode {
 	orderBy := make([]parser.SortOrder, len(sel.OrderBy))
+	projKeys := e.projectionKeyMap(sel)
 	for i, o := range sel.OrderBy {
 		s := stripTableAlias(o.Column)
 		if alias, ok := sel.ColumnAliases[s]; ok {
 			s = alias
+		}
+		// ORDER BY may reference a SELECT alias or expression: resolve it to
+		// the row key the projection actually emits.
+		if key, ok := projKeys[s]; ok {
+			s = key
+		} else if key, ok := projKeys[stripTableAlias(s)]; ok {
+			s = key
 		}
 		orderBy[i] = parser.SortOrder{Column: s, Desc: o.Desc}
 	}
@@ -592,6 +635,7 @@ func (e *Engine) addSortAndLimit(root plan.LogicalNode, sel *parser.SelectQuery)
 func (e *Engine) addProjection(root plan.LogicalNode, sel *parser.SelectQuery) plan.LogicalNode {
 	var columns []string
 	var columnExprs []parser.Expression
+	windowKeys := windowKeySet(sel)
 	for i, col := range sel.Columns {
 		if stripTableAlias(col) == "*" {
 			expanded := e.expandStarColumns(sel)
@@ -602,7 +646,10 @@ func (e *Engine) addProjection(root plan.LogicalNode, sel *parser.SelectQuery) p
 			}
 			continue
 		}
-		stripped := e.projectColumnKey(col, sel)
+		stripped := col
+		if !windowKeys[col] {
+			stripped = e.projectColumnKey(col, sel)
+		}
 		columns = append(columns, stripped)
 		if i < len(sel.ColumnExprs) && sel.ColumnExprs[i] != nil {
 			columnExprs = append(columnExprs, sel.ColumnExprs[i])
@@ -624,11 +671,56 @@ func (e *Engine) addProjection(root plan.LogicalNode, sel *parser.SelectQuery) p
 	return root
 }
 
+// windowKeySet returns the row keys the Window node writes this query's
+// window values to. Window result keys are projected verbatim: they may
+// contain qualified arguments (e.g. "SUM(o.amount)") and per-column
+// deduplication suffixes (e.g. "ROW_NUMBER()#2").
+func windowKeySet(sel *parser.SelectQuery) map[string]bool {
+	keys := make(map[string]bool, len(sel.WindowExprs))
+	for _, w := range sel.WindowExprs {
+		if w.FuncName == "" {
+			continue
+		}
+		keys[windowResultKey(w)] = true
+	}
+	return keys
+}
+
+// projectionKeyMap maps every SELECT item — and every column alias — to the
+// row key the projection emits for it. The sort node uses it to resolve
+// ORDER BY references to the actual output keys.
+func (e *Engine) projectionKeyMap(sel *parser.SelectQuery) map[string]string {
+	windowKeys := windowKeySet(sel)
+	keys := make(map[string]string, len(sel.Columns))
+	for _, col := range sel.Columns {
+		if stripTableAlias(col) == "*" {
+			continue
+		}
+		key := col
+		if !windowKeys[col] {
+			key = e.projectColumnKey(col, sel)
+		}
+		keys[col] = key
+	}
+	for alias, orig := range sel.ColumnAliases {
+		if key, ok := keys[orig]; ok {
+			keys[alias] = key
+		}
+	}
+	return keys
+}
+
 // projectColumnKey decides the output row key for a selected column.
 // References to the right side of a join keep their table qualifier so that
 // same-named columns from both tables stay distinguishable; everything else
 // uses the bare column name.
 func (e *Engine) projectColumnKey(col string, sel *parser.SelectQuery) string {
+	// Function-call keys ("SUM(o.amount)") keep their call shape — only the
+	// first argument's table qualifier is stripped so the key matches what
+	// the aggregate/window nodes compute.
+	if idx := strings.IndexByte(col, '('); idx > 0 && strings.IndexByte(col[:idx], '.') < 0 && strings.HasSuffix(col, ")") {
+		return normalizeFuncColumnKey(col)
+	}
 	idx := strings.IndexByte(col, '.')
 	if idx <= 0 {
 		return col
@@ -640,6 +732,89 @@ func (e *Engine) projectColumnKey(col string, sel *parser.SelectQuery) string {
 		}
 	}
 	return col[idx+1:]
+}
+
+// normalizeFuncColumnKey strips the table qualifier from the first argument
+// of a function-call column key: "SUM(o.amount)" -> "SUM(amount)",
+// "COUNT(DISTINCT u.id)" -> "COUNT(DISTINCT id)". The result matches the key
+// the aggregate nodes compute (function name + DISTINCT prefix + stripped
+// first argument); any further arguments are left untouched.
+func normalizeFuncColumnKey(col string) string {
+	open := strings.IndexByte(col, '(')
+	if open <= 0 || !strings.HasSuffix(col, ")") {
+		return col
+	}
+	inner := col[open+1 : len(col)-1]
+	distinct := ""
+	if len(inner) >= 9 && strings.EqualFold(inner[:9], "DISTINCT ") {
+		distinct = "DISTINCT "
+		inner = strings.TrimSpace(inner[9:])
+	}
+	first, rest := splitFirstArg(inner)
+	return col[:open+1] + distinct + stripFirstArgQualifier(first) + rest + ")"
+}
+
+// splitFirstArg splits a function argument list at the first top-level comma
+// (commas inside nested parentheses or quoted strings do not count). rest
+// keeps the comma and everything after it.
+func splitFirstArg(inner string) (first, rest string) {
+	depth := 0
+	var quote byte
+	for i := 0; i < len(inner); i++ {
+		c := inner[i]
+		if quote != 0 {
+			if c == quote {
+				quote = 0
+			}
+			continue
+		}
+		switch c {
+		case '\'', '"', '`':
+			quote = c
+		case '(':
+			depth++
+		case ')':
+			if depth > 0 {
+				depth--
+			}
+		case ',':
+			if depth == 0 {
+				return strings.TrimSpace(inner[:i]), inner[i:]
+			}
+		}
+	}
+	return inner, ""
+}
+
+// stripFirstArgQualifier removes a table qualifier from a simple qualified
+// column reference ("o.amount" -> "amount"). Decimals (1.5), string literals
+// ('a.b') and arbitrary expressions are left untouched.
+func stripFirstArgQualifier(arg string) string {
+	dot := strings.IndexByte(arg, '.')
+	if dot <= 0 || dot+1 >= len(arg) {
+		return arg
+	}
+	if !isIdentToken(arg[:dot]) || !isIdentStart(arg[dot+1]) {
+		return arg
+	}
+	return arg[dot+1:]
+}
+
+func isIdentStart(c byte) bool {
+	return c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+}
+
+func isIdentToken(s string) bool {
+	if s == "" || !isIdentStart(s[0]) {
+		return false
+	}
+	for i := 1; i < len(s); i++ {
+		c := s[i]
+		if c != '_' && (c < '0' || c > '9') && !isIdentStart(c) {
+			return false
+		}
+	}
+	return true
 }
 
 // makeFuncCallExpr checks if a column key looks like a function call (e.g. "UPPER(name)")
